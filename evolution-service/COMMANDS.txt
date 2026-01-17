@@ -1,0 +1,152 @@
+# أوامر Evolution API - الإعداد والتشغيل
+
+===============================================
+📋 الخطوة 1: تحديث بيانات Supabase
+===============================================
+
+عدّل الملف .env.evolution وضع بيانات Supabase الخاصة بك:
+DATABASE_CONNECTION_URI=postgresql://postgres:[PASSWORD]@db.[PROJECT_ID].supabase.co:5432/postgres?schema=public
+
+
+===============================================
+🚀 الخطوة 2: تشغيل Evolution API
+===============================================
+
+cd evolution-service
+docker-compose up -d
+
+
+===============================================
+📊 الخطوة 3: التحقق من التشغيل
+===============================================
+
+# عرض السجلات
+docker-compose logs -f evolution-api
+
+# التحقق من حالة الحاوية
+docker ps
+
+# اختبار الاتصال
+curl http://localhost:8080/
+
+
+===============================================
+📱 الخطوة 4: إنشاء Instance واتصال WhatsApp
+===============================================
+
+# إنشاء Instance جديد
+curl -X POST http://localhost:8080/instance/create \
+  -H "Content-Type: application/json" \
+  -H "apikey: myEvolutionKey2025" \
+  -d '{
+    "instanceName": "school_system",
+    "qrcode": true,
+    "integration": "WHATSAPP-BAILEYS"
+  }'
+
+# الحصول على QR Code
+curl http://localhost:8080/instance/connect/school_system \
+  -H "apikey: myEvolutionKey2025"
+
+
+===============================================
+✉️ الخطوة 5: اختبار إرسال رسالة
+===============================================
+
+curl -X POST http://localhost:8080/message/sendText/school_system \
+  -H "Content-Type: application/json" \
+  -H "apikey: myEvolutionKey2025" \
+  -d '{
+    "number": "212600000000",
+    "text": "مرحبا، هذه رسالة تجريبية من Evolution API"
+  }'
+
+
+===============================================
+🔍 أوامر الصيانة
+===============================================
+
+# إعادة تشغيل الخدمة
+docker-compose restart
+
+# إيقاف الخدمة
+docker-compose down
+
+# إيقاف وحذف كل البيانات
+docker-compose down -v
+
+# تحديث الصورة لأحدث إصدار
+docker-compose pull
+docker-compose up -d
+
+
+===============================================
+📊 أوامر المراقبة
+===============================================
+
+# حالة Instance
+curl http://localhost:8080/instance/connectionState/school_system \
+  -H "apikey: myEvolutionKey2025"
+
+# قائمة جميع Instances
+curl http://localhost:8080/instance/fetchInstances \
+  -H "apikey: myEvolutionKey2025"
+
+# معلومات Instance محدد
+curl http://localhost:8080/instance/connectionState/school_system \
+  -H "apikey: myEvolutionKey2025"
+
+
+===============================================
+🔐 معلومات الاتصال
+===============================================
+
+URL: http://[SERVER_IP]:8080
+API Key: myEvolutionKey2025
+Instance Name: school_system
+
+⚠️ تأكد من:
+1. فتح المنفذ 8080 في جدار الحماية
+2. تعديل [SERVER_IP] ليكون IP الخادم الفعلي
+3. تغيير API Key في الإنتاج
+
+
+===============================================
+❌ استكشاف الأخطاء
+===============================================
+
+# إذا لم تعمل الخدمة، تحقق من:
+
+1. السجلات:
+   docker-compose logs evolution-api
+
+2. حالة الحاوية:
+   docker ps -a
+
+3. إعادة البناء:
+   docker-compose down
+   docker-compose up -d --force-recreate
+
+4. التحقق من اتصال قاعدة البيانات:
+   - تأكد من صحة بيانات Supabase في .env.evolution
+   - تحقق من أن Supabase يسمح بالاتصال من IP الخادم
+
+
+===============================================
+📚 المراجع والدعم
+===============================================
+
+التوثيق الرسمي: https://doc.evolution-api.com
+GitHub: https://github.com/EvolutionAPI/evolution-api
+Discord: https://evolution-api.com/discord
+
+
+===============================================
+✅ ملاحظات مهمة
+===============================================
+
+1. هذه الخدمة مستقلة تمامًا عن نظام إدارة التلاميذ
+2. لا تعدل أي ملفات في المجلد الرئيسي للمشروع
+3. البرنامج الرئيسي سيتصل بـ Evolution عبر HTTP API فقط
+4. جميع إعدادات Evolution في مجلد evolution-service فقط
+5. قاعدة بيانات Supabase تُستخدم فقط لـ Evolution API

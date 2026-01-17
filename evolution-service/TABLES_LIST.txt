@@ -1,0 +1,154 @@
+================================================================
+  EVOLUTION API v2 - DATABASE TABLES LIST
+================================================================
+
+Project: benjzaxxkcjwnrfllvel
+Database: Supabase PostgreSQL 15
+Status: ✅ All tables created and tested successfully
+Date: October 26, 2025
+
+================================================================
+  MAIN TABLES (6 Total)
+================================================================
+
+1. evolution_instances
+   Purpose: WhatsApp instance configurations
+   Key Column: name (UNIQUE)
+   Relationships: Parent to all other tables
+
+2. evolution_messages
+   Purpose: Message logs (sent & received)
+   Key Column: message_id
+   Foreign Key: instance_id → evolution_instances(id)
+   Cascade: DELETE
+
+3. evolution_contacts
+   Purpose: WhatsApp contacts database
+   Key Columns: (instance_id, remote_jid) UNIQUE
+   Foreign Key: instance_id → evolution_instances(id)
+   Cascade: DELETE
+
+4. evolution_chats
+   Purpose: Chat conversations (DM & groups)
+   Key Columns: (instance_id, remote_jid) UNIQUE
+   Foreign Key: instance_id → evolution_instances(id)
+   Cascade: DELETE
+
+5. evolution_webhooks
+   Purpose: Webhook configurations
+   Key Column: url
+   Foreign Key: instance_id → evolution_instances(id)
+   Cascade: DELETE
+
+6. evolution_sessions
+   Purpose: WhatsApp session authentication data
+   Key Column: instance_id (UNIQUE)
+   Foreign Key: instance_id → evolution_instances(id) UNIQUE
+   Cascade: DELETE
+
+================================================================
+  SECURITY
+================================================================
+
+✅ All tables have Row Level Security (RLS) enabled
+✅ Public: SELECT (read-only)
+✅ Authenticated: INSERT, UPDATE, DELETE
+
+================================================================
+  INDEXES CREATED
+================================================================
+
+evolution_instances:
+  - idx_evolution_instances_name
+  - idx_evolution_instances_status
+
+evolution_messages:
+  - idx_evolution_messages_instance_id
+  - idx_evolution_messages_remote_jid
+  - idx_evolution_messages_status
+  - idx_evolution_messages_timestamp
+  - idx_evolution_messages_message_id
+
+evolution_contacts:
+  - idx_evolution_contacts_instance_id
+  - idx_evolution_contacts_remote_jid
+
+evolution_chats:
+  - idx_evolution_chats_instance_id
+  - idx_evolution_chats_remote_jid
+  - idx_evolution_chats_last_message
+
+evolution_webhooks:
+  - idx_evolution_webhooks_instance_id
+  - idx_evolution_webhooks_enabled
+
+evolution_sessions:
+  - idx_evolution_sessions_instance_id
+
+================================================================
+  TRIGGERS
+================================================================
+
+✅ update_evolution_instances_timestamp
+✅ update_evolution_contacts_timestamp
+✅ update_evolution_chats_timestamp
+✅ update_evolution_webhooks_timestamp
+✅ update_evolution_sessions_timestamp
+
+Function: update_evolution_timestamp()
+Purpose: Automatically update 'updated_at' column on UPDATE
+
+================================================================
+  TESTING RESULTS
+================================================================
+
+✅ Table creation: SUCCESS
+✅ Foreign key relationships: SUCCESS
+✅ INSERT test: SUCCESS
+✅ Cascade DELETE: SUCCESS
+✅ RLS policies: ACTIVE
+✅ Indexes: CREATED
+✅ Triggers: ACTIVE
+
+================================================================
+  QUICK VERIFICATION QUERY
+================================================================
+
+-- Check all tables exist
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+  AND table_name LIKE 'evolution_%'
+ORDER BY table_name;
+
+Expected Result:
+  evolution_chats
+  evolution_contacts
+  evolution_instances
+  evolution_messages
+  evolution_sessions
+  evolution_webhooks
+
+================================================================
+  CONNECTION STRINGS
+================================================================
+
+Pooler (Recommended):
+postgresql://postgres.benjzaxxkcjwnrfllvel:PgSbx2025Secure987@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
+
+Direct (Testing):
+postgresql://postgres:PgSbx2025Secure987@db.benjzaxxkcjwnrfllvel.supabase.co:5432/postgres?sslmode=require
+
+================================================================
+  DOCUMENTATION FILES
+================================================================
+
+📄 DATABASE_SCHEMA.md          - Complete schema documentation (English)
+📄 EVOLUTION_DDL_DUMP.sql      - Full DDL SQL dump
+📄 هيكل_قاعدة_البيانات.md     - Complete schema documentation (Arabic)
+📄 TABLES_LIST.txt              - This file (quick reference)
+📄 AWS_SUPABASE_CONNECTION_GUIDE.md - AWS connection guide
+
+================================================================
+  STATUS: ✅ PRODUCTION READY
+================================================================

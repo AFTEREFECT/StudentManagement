@@ -1,0 +1,171 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* إصلاح مشكلة تقطيع الصفحة */
+html, body {
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* تحسينات للهواتف الذكية */
+@media (max-width: 768px) {
+  /* تحسين الشريط الجانبي للهواتف */
+  .sidebar-mobile {
+    position: fixed;
+    top: 0;
+    right: -100%;
+    width: 80%;
+    height: 100vh;
+    z-index: 50;
+    transition: right 0.3s ease-in-out;
+    overflow-y: auto;
+  }
+  
+  .sidebar-mobile.open {
+    right: 0;
+  }
+  
+  /* تحسين الجداول للهواتف */
+  .table-mobile {
+    font-size: 0.875rem;
+  }
+  
+  .table-mobile th,
+  .table-mobile td {
+    padding: 0.75rem 0.5rem;
+  }
+  
+  /* تحسين النماذج للهواتف */
+  .form-mobile input,
+  .form-mobile select,
+  .form-mobile textarea {
+    font-size: 16px; /* منع التكبير التلقائي في iOS */
+  }
+  
+  /* تحسين الأزرار للهواتف */
+  .btn-mobile {
+    min-height: 44px; /* الحد الأدنى لحجم اللمس */
+    padding: 1rem 1.5rem;
+    font-size: 1rem;
+  }
+  
+  /* تحسين النصوص للهواتف */
+  .text-mobile {
+    font-size: 1rem !important;
+    line-height: 1.5;
+  }
+  
+  /* تحسين القائمة الجانبية للهواتف */
+  .sidebar-mobile-item {
+    padding: 1rem 1.5rem;
+    font-size: 1.1rem;
+    min-height: 50px;
+  }
+  
+  /* تحسين العناوين للهواتف */
+  .heading-mobile {
+    font-size: 1.5rem !important;
+    line-height: 1.3;
+  }
+}
+
+/* تحسينات للأجهزة اللوحية */
+@media (min-width: 768px) and (max-width: 1024px) {
+  .grid-tablet {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* تحسين الخطوط العربية */
+.arabic-text {
+  font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* تحسين الطباعة */
+@media print {
+  /* منع تقطيع الجداول والصفوف */
+  table {
+    page-break-inside: avoid !important;
+    border-collapse: collapse !important;
+  }
+  
+  tr {
+    page-break-inside: avoid !important;
+    page-break-after: auto !important;
+  }
+  
+  thead {
+    display: table-header-group !important;
+  }
+  
+  tfoot {
+    display: table-footer-group !important;
+  }
+  
+  .no-break {
+    page-break-inside: avoid !important;
+  }
+  
+  .page-container {
+    page-break-inside: avoid !important;
+  }
+  
+  /* ضمان الألوان السوداء في الطباعة */
+  * {
+    color: #000 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  
+  table th {
+    background: #000 !important;
+    color: white !important;
+    border: 2px solid #000 !important;
+  }
+  
+  table td {
+    border: 2px solid #000 !important;
+    color: #000 !important;
+  }
+  
+  .print-hidden {
+    display: none !important;
+  }
+  
+  .print-visible {
+    display: block !important;
+  }
+  
+  body {
+    font-family: 'Cairo', Arial, sans-serif;
+    direction: rtl;
+    color: #000 !important;
+  }
+
+/* ========== Custom Animations ========== */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out;
+}
+
+ 
+
+}

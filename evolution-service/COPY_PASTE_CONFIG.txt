@@ -1,0 +1,160 @@
+════════════════════════════════════════════════════════════════════════════════
+  EVOLUTION API - SUPABASE CONNECTION - READY TO COPY & PASTE
+════════════════════════════════════════════════════════════════════════════════
+
+⚠️  IMPORTANT: The username format was wrong!
+    OLD (wrong):  postgres
+    NEW (correct): postgres.benjzaxxkcjwnrfllvel
+
+════════════════════════════════════════════════════════════════════════════════
+  📋 OPTION 1: CONNECTION POOLER (RECOMMENDED FOR PRODUCTION)
+════════════════════════════════════════════════════════════════════════════════
+
+Copy this EXACTLY into your .env.evolution file:
+
+DATABASE_PROVIDER=postgresql
+DATABASE_CONNECTION_URI=postgresql://postgres.benjzaxxkcjwnrfllvel:PgSbx2025Secure987@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
+AUTHENTICATION_API_KEY=myEvolutionKey2025
+SERVER_URL=http://localhost:8080
+SERVER_PORT=8080
+
+════════════════════════════════════════════════════════════════════════════════
+  📋 OPTION 2: DIRECT CONNECTION (FOR TESTING/TROUBLESHOOTING)
+════════════════════════════════════════════════════════════════════════════════
+
+If Option 1 doesn't work, use this instead:
+
+DATABASE_PROVIDER=postgresql
+DATABASE_CONNECTION_URI=postgresql://postgres:PgSbx2025Secure987@db.benjzaxxkcjwnrfllvel.supabase.co:5432/postgres?sslmode=require
+AUTHENTICATION_API_KEY=myEvolutionKey2025
+SERVER_URL=http://localhost:8080
+SERVER_PORT=8080
+
+════════════════════════════════════════════════════════════════════════════════
+  🚀 DEPLOYMENT COMMANDS (RUN IN ORDER)
+════════════════════════════════════════════════════════════════════════════════
+
+# 1. Stop Evolution API
+docker-compose down
+
+# 2. Backup old config (optional but recommended)
+cp .env.evolution .env.evolution.backup
+
+# 3. Update .env.evolution with the new configuration above
+nano .env.evolution
+# OR
+vi .env.evolution
+
+# 4. Start Evolution API
+docker-compose up -d
+
+# 5. Watch logs for success
+docker-compose logs -f evolution-api
+
+# 6. Test the API
+curl http://localhost:8080/
+
+════════════════════════════════════════════════════════════════════════════════
+  ✅ SUCCESS INDICATORS
+════════════════════════════════════════════════════════════════════════════════
+
+You should see:
+
+✓ No "P1001: Can't reach database server" errors
+✓ No "FATAL: Tenant or user not found" errors
+✓ "Database connection established" or similar message
+✓ curl http://localhost:8080/ returns: {"status":"ok","version":"2.1.1"}
+
+════════════════════════════════════════════════════════════════════════════════
+  🔍 QUICK TEST COMMANDS
+════════════════════════════════════════════════════════════════════════════════
+
+# Test Pooler connection with psql:
+psql "postgresql://postgres.benjzaxxkcjwnrfllvel:PgSbx2025Secure987@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true" -c "SELECT version();"
+
+# Test Direct connection with psql:
+psql "postgresql://postgres:PgSbx2025Secure987@db.benjzaxxkcjwnrfllvel.supabase.co:5432/postgres?sslmode=require" -c "SELECT version();"
+
+# Test network connectivity to Pooler:
+nc -zv aws-0-eu-central-1.pooler.supabase.com 6543
+
+# Test network connectivity to Direct:
+nc -zv db.benjzaxxkcjwnrfllvel.supabase.co 5432
+
+# Get your server's public IP (add this to Supabase if needed):
+curl -4 ifconfig.me
+
+════════════════════════════════════════════════════════════════════════════════
+  🛡️ SUPABASE NETWORK CONFIGURATION
+════════════════════════════════════════════════════════════════════════════════
+
+CRITICAL: Make sure your AWS server IP is allowed in Supabase!
+
+1. Get your server IP:
+   curl -4 ifconfig.me
+
+2. Go to Supabase Dashboard:
+   https://supabase.com/dashboard/project/benjzaxxkcjwnrfllvel/settings/database
+
+3. Find "Network Restrictions" or "Allowed IP Addresses"
+
+4. Add your server IP (from step 1)
+
+5. For testing only, you can temporarily use: 0.0.0.0/0 (⚠️ NOT SECURE FOR PRODUCTION!)
+
+════════════════════════════════════════════════════════════════════════════════
+  📊 CONFIGURATION COMPARISON
+════════════════════════════════════════════════════════════════════════════════
+
+| Feature           | Pooler                          | Direct                    |
+|-------------------|---------------------------------|---------------------------|
+| Username          | postgres.benjzaxxkcjwnrfllvel   | postgres                  |
+| Password          | PgSbx2025Secure987              | PgSbx2025Secure987        |
+| Host              | aws-0-eu-central-1.pooler...    | db.benjzaxxkcjwnrfllvel...|
+| Port              | 6543                            | 5432                      |
+| Speed             | Faster                          | Slower                    |
+| Recommended For   | Production                      | Testing                   |
+
+════════════════════════════════════════════════════════════════════════════════
+  🚨 TROUBLESHOOTING
+════════════════════════════════════════════════════════════════════════════════
+
+Problem: "Tenant or user not found"
+Solution: Use username "postgres.benjzaxxkcjwnrfllvel" (with project ID suffix)
+
+Problem: "Can't reach database server"
+Solution: Add your server IP to Supabase Network Restrictions
+
+Problem: "Connection timeout"
+Solution: Switch from Pooler to Direct connection
+
+Problem: "Password authentication failed"
+Solution: Verify password is: PgSbx2025Secure987
+
+════════════════════════════════════════════════════════════════════════════════
+  📁 FILES CREATED
+════════════════════════════════════════════════════════════════════════════════
+
+✅ .env.evolution                        - Updated configuration file
+✅ test-connection.sh                    - Connection test script
+✅ AWS_SUPABASE_CONNECTION_GUIDE.md      - Complete guide (Arabic)
+✅ التعليمات_السريعة.txt                  - Quick instructions (Arabic)
+✅ QUICK_FIX_SUMMARY.md                  - Summary (English)
+✅ COPY_PASTE_CONFIG.txt                 - This file
+
+════════════════════════════════════════════════════════════════════════════════
+  ✅ STATUS: READY TO DEPLOY
+════════════════════════════════════════════════════════════════════════════════
+
+All configuration files have been updated with the correct connection string.
+The main issue was the username format for Supabase Pooler.
+
+Next steps:
+1. Copy .env.evolution to your AWS server
+2. Run: docker-compose down && docker-compose up -d
+3. Verify: docker-compose logs -f evolution-api
+4. Test: curl http://localhost:8080/
+
+════════════════════════════════════════════════════════════════════════════════
+  Last Updated: October 26, 2025 | Status: Production Ready ✅
+════════════════════════════════════════════════════════════════════════════════

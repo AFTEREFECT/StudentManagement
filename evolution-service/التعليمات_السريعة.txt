@@ -1,0 +1,159 @@
+═══════════════════════════════════════════════════════════
+    حل مشكلة الاتصال بين Evolution API و Supabase على AWS
+═══════════════════════════════════════════════════════════
+
+🎯 المشكلة:
+-----------
+الخطأ: FATAL: Tenant or user not found
+السبب: صيغة اسم المستخدم خاطئة عند استخدام Supabase Pooler
+
+✅ الحل:
+--------
+تم تصحيح اسم المستخدم من:
+  ❌ postgres
+  ✅ postgres.benjzaxxkcjwnrfllvel
+
+📋 الملفات المحدّثة:
+-------------------
+1. ✅ .env.evolution - تم تحديثه بالإعدادات الصحيحة
+2. ✅ test-connection.sh - سكريبت لاختبار الاتصال
+3. ✅ AWS_SUPABASE_CONNECTION_GUIDE.md - دليل كامل بالعربية
+
+═══════════════════════════════════════════════════════════
+    خطوات التطبيق على سيرفر AWS (تنفذ بالترتيب)
+═══════════════════════════════════════════════════════════
+
+1️⃣ انقل الملفات إلى سيرفر AWS:
+   ---------------------------------
+   scp -i your-key.pem .env.evolution ubuntu@your-server-ip:/path/to/evolution-service/
+   scp -i your-key.pem test-connection.sh ubuntu@your-server-ip:/path/to/evolution-service/
+
+2️⃣ على سيرفر AWS، اختبر الاتصال:
+   ---------------------------------
+   cd /path/to/evolution-service
+   chmod +x test-connection.sh
+   ./test-connection.sh
+
+   النتيجة المتوقعة:
+   ✓ Pooler connection successful!
+   PostgreSQL 15.x on x86_64-pc-linux-gnu
+
+3️⃣ أعد تشغيل Evolution API:
+   ---------------------------------
+   docker-compose down
+   docker-compose up -d
+
+4️⃣ تابع السجلات للتأكد:
+   ---------------------------------
+   docker-compose logs -f evolution-api
+
+   علامات النجاح:
+   ✓ لا توجد رسائل خطأ P1001
+   ✓ لا توجد رسائل "Tenant or user not found"
+   ✓ رسالة تأكيد الاتصال بقاعدة البيانات
+
+5️⃣ اختبر Evolution API:
+   ---------------------------------
+   curl http://localhost:8080/
+
+   النتيجة المتوقعة:
+   {"status":"ok","version":"2.1.1"}
+
+═══════════════════════════════════════════════════════════
+    الإعدادات الصحيحة (للنسخ المباشر)
+═══════════════════════════════════════════════════════════
+
+Connection String للـ Pooler (موصى به):
+-----------------------------------------
+postgresql://postgres.benjzaxxkcjwnrfllvel:PgSbx2025Secure987@aws-0-eu-central-1.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
+
+Connection String المباشر (للاختبار):
+---------------------------------------
+postgresql://postgres:PgSbx2025Secure987@db.benjzaxxkcjwnrfllvel.supabase.co:5432/postgres?sslmode=require
+
+═══════════════════════════════════════════════════════════
+    النقاط الحاسمة (CRITICAL POINTS)
+═══════════════════════════════════════════════════════════
+
+✅ اسم المستخدم للـ Pooler: postgres.benjzaxxkcjwnrfllvel
+✅ كلمة المرور: PgSbx2025Secure987
+✅ Project ID: benjzaxxkcjwnrfllvel
+✅ المنفذ للـ Pooler: 6543
+✅ المنفذ للاتصال المباشر: 5432
+✅ SSL: مطلوب (مفعّل تلقائياً في Pooler)
+
+═══════════════════════════════════════════════════════════
+    استكشاف الأخطاء
+═══════════════════════════════════════════════════════════
+
+❌ إذا استمر خطأ "Tenant or user not found":
+   → تأكد من استخدام: postgres.benjzaxxkcjwnrfllvel
+   → تحقق من كلمة المرور
+
+❌ إذا ظهر خطأ "Can't reach database":
+   → تأكد من IP السيرفر مضاف في Supabase
+   → احصل على IP: curl -4 ifconfig.me
+   → أضفه في: Supabase Dashboard → Settings → Database
+
+❌ إذا ظهر خطأ "connection timeout":
+   → استخدم Direct Connection مؤقتاً
+   → ألغِ التعليق عن السطر 12 في .env.evolution
+   → علّق على السطر 9
+
+═══════════════════════════════════════════════════════════
+    أوامر مفيدة
+═══════════════════════════════════════════════════════════
+
+# التحقق من حالة الحاوية
+docker-compose ps
+
+# رؤية السجلات الحية
+docker-compose logs -f evolution-api
+
+# رؤية آخر 100 سطر من السجلات
+docker-compose logs --tail=100 evolution-api
+
+# إعادة التشغيل الكامل
+docker-compose down -v && docker-compose up -d
+
+# التحقق من IP العام للسيرفر
+curl -4 ifconfig.me
+
+# اختبار الاتصال بـ Supabase Pooler
+nc -zv aws-0-eu-central-1.pooler.supabase.com 6543
+
+# اختبار الاتصال بـ Supabase Direct
+nc -zv db.benjzaxxkcjwnrfllvel.supabase.co 5432
+
+═══════════════════════════════════════════════════════════
+    ملاحظات إضافية
+═══════════════════════════════════════════════════════════
+
+📌 Connection Pooler (الموصى به للإنتاج):
+   - أسرع في الأداء
+   - يستخدم pgBouncer
+   - يتطلب صيغة خاصة لاسم المستخدم
+   - المنفذ: 6543
+
+📌 Direct Connection (للتطوير/الاختبار):
+   - أبطأ قليلاً
+   - أكثر موثوقية للاختبار
+   - يستخدم اسم المستخدم العادي
+   - المنفذ: 5432
+
+📌 الأمان:
+   - تأكد من تفعيل SSL
+   - لا تشارك كلمة المرور
+   - قيّد الوصول للـ IPs المسموحة فقط
+
+═══════════════════════════════════════════════════════════
+    الحالة: ✅ جاهز للتطبيق
+═══════════════════════════════════════════════════════════
+
+تم إعداد جميع الملفات والإعدادات.
+يمكنك الآن نقل الملفات إلى AWS وتطبيق الخطوات أعلاه.
+
+التاريخ: 26 أكتوبر 2025
+الإصدار: 1.0
+
+═══════════════════════════════════════════════════════════

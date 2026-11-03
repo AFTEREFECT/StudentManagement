@@ -10,7 +10,7 @@ export const SubscriptionManagement: React.FC = () => {
   const [licenseKey, setLicenseKey] = useState('');
   const [institutionName, setInstitutionName] = useState('');
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
-  const [activeTab, setActiveTab] = useState<'plans' | 'activate' | 'trial'>('plans');
+  const [activeTab, setActiveTab] = useState<'plans' | 'activate' | 'trial'>('activate');
   const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan | null>(null);
   const [showPaymentInfo, setShowPaymentInfo] = useState(false);
 
@@ -229,16 +229,7 @@ export const SubscriptionManagement: React.FC = () => {
               >
                 تفعيل رمز الترخيص
               </button>
-              <button
-                onClick={() => setActiveTab('trial')}
-                className={`flex-1 px-6 py-4 text-lg font-medium transition-colors ${
-                  activeTab === 'trial'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                الفترة التجريبية
-              </button>
+              
             </div>
           </div>
 
@@ -344,71 +335,7 @@ export const SubscriptionManagement: React.FC = () => {
               </div>
             )}
 
-            {activeTab === 'trial' && (
-              <div className="max-w-md mx-auto">
-                <div className="text-center mb-6">
-                  <Gift className="w-16 h-16 text-blue-600 mx-auto mb-4" />
-                  <h3 className="text-2xl font-bold text-gray-800 mb-2">الفترة التجريبية المجانية</h3>
-                  <p className="text-gray-600">جرب النظام مجاناً لمدة 7 أيام</p>
-                </div>
-
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-gray-700 font-medium mb-2">
-                      اسم المؤسسة
-                    </label>
-                    <input
-                      type="text"
-                      value={institutionName}
-                      onChange={(e) => setInstitutionName(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="أدخل اسم المؤسسة"
-                      disabled={loading}
-                    />
-                  </div>
-
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                    <h4 className="font-medium text-gray-800 mb-2">ما ستحصل عليه:</h4>
-                    <ul className="space-y-2 text-sm text-gray-700">
-                      <li className="flex items-center gap-2">
-                        <CheckCircle className="w-4 h-4 text-green-600" />
-                        7 أيام مجانية كاملة
-                      </li>
-                      <li className="flex items-center gap-2">
-                        <CheckCircle className="w-4 h-4 text-green-600" />
-                        جميع ميزات الخطة الأساسية
-                      </li>
-                      <li className="flex items-center gap-2">
-                        <CheckCircle className="w-4 h-4 text-green-600" />
-                        بدون بطاقة ائتمان
-                      </li>
-                      <li className="flex items-center gap-2">
-                        <CheckCircle className="w-4 h-4 text-green-600" />
-                        إلغاء في أي وقت
-                      </li>
-                    </ul>
-                  </div>
-
-                  <button
-                    onClick={() => handleStartTrial('Basic')}
-                    disabled={loading}
-                    className="w-full py-3 bg-gradient-to-r from-green-600 to-blue-600 text-white rounded-lg font-medium hover:from-green-700 hover:to-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  >
-                    {loading ? (
-                      <>
-                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                        <span>جاري البدء...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Gift className="w-5 h-5" />
-                        <span>ابدأ الفترة التجريبية</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            )}
+          
           </div>
         </div>
       </div>

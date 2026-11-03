@@ -1,7 +1,18 @@
-import initSqlJs from 'sql.js';
+ import initSqlJs from 'sql.js';
+ import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
+import type { ReceivedAttendance } from './attendanceStartupSync';
+import {
+  DEFAULT_DISCIPLINE_ACTIONS,
+  DEFAULT_DISCIPLINE_CATEGORIES,
+  DisciplineAction,
+  DisciplineCategory,
+  DisciplineRecordKind,
+  DisciplineRecordStatus,
+  NewStudentIncident,
+  StudentIncident,
+} from './discipline';
 
 
-const levelId = window.crypto.randomUUID();
 
 // أنواع البيانات للجداول الجديدة
 interface Level {
@@ -39,28 +50,51 @@ interface Class {
 class DatabaseManager {
   private db: any = null;
   private isInitialized = false;
+  private initializing: Promise<void> | null = null;
+  private persistenceQueue: Promise<void> = Promise.resolve();
   private dbName = 'StudentManagementDB';
   private dbVersion = 1;
   private storeName = 'database';
 
   async initialize() {
     if (this.isInitialized) return;
+    if (!this.initializing) {
+      this.initializing = this.initializeDatabase().finally(() => { this.initializing = null; });
+    }
+    return this.initializing;
+  }
 
+  private async initializeDatabase() {
+
+   
     try {
       const SQL = await initSqlJs({
-        locateFile: (file: string) => `https://sql.js.org/dist/${file}`
+        locateFile: () => sqlWasmUrl
       });
 
-      // محاولة تحميل قاعدة البيانات من IndexedDB
-      const savedDb = await this.loadFromIndexedDB();
+      // Keep desktop data outside the install folder so application updates do not replace it.
+      const desktopDb = window.desktopStorage
+        ? await window.desktopStorage.readDatabase()
+        : null;
+      const savedDb = desktopDb || await this.loadFromIndexedDB();
       if (savedDb) {
-        this.db = new SQL.Database(savedDb);
+        try {
+          this.db = new SQL.Database(savedDb);
+        } catch (error) {
+          if (!desktopDb) throw error;
+
+          const indexedDb = await this.loadFromIndexedDB();
+          if (!indexedDb) throw error;
+          this.db = new SQL.Database(indexedDb);
+        }
       } else {
         this.db = new SQL.Database();
       }
 
       await this.createTables();
+      await this.saveDatabase();
       this.isInitialized = true;
+
       console.log('تم تهيئة قاعدة البيانات بنجاح');
     } catch (error) {
       console.error('خطأ في تهيئة قاعدة البيانات:', error);
@@ -113,7 +147,90 @@ getAllSections(): Class[] {
 }
 ///////////////
  
-  
+async resetActivationCodes(): Promise<void> {
+  await this.initialize();
+  this.db.run(`DELETE FROM activation_codes`);
+  await this.saveDatabase();
+}
+
+ getDatabaseInstance() {
+  return this.db;
+}
+
+getSupabaseInstitutionId() {
+  try {
+    const stmt = this.db.prepare(`
+      SELECT supabaseInstitutionId
+      FROM institution_settings
+      ORDER BY updatedAt DESC
+      LIMIT 1
+    `);
+
+    if (stmt.step()) {
+      const row = stmt.getAsObject() as any;
+      stmt.free();
+      return String(row.supabaseInstitutionId || "").trim();
+    }
+
+    stmt.free();
+    return "";
+  } catch (error) {
+    console.error("خطأ في getSupabaseInstitutionId:", error);
+    return "";
+  }
+}
+
+
+ async getStudentsWithActivationData(): Promise<any[]> {
+  await this.initialize();
+
+  const stmt = this.db.prepare(`
+     SELECT
+  s.*,
+  l.name as levelName,
+  sec.name as sectionName,
+  ac.code as voucher,
+  ac.national_id as activationNationalId,
+  ac.used as voucherUsed,
+  ac.created_at as voucherCreatedAt
+FROM students s
+LEFT JOIN levels l ON s.levelId = l.id
+LEFT JOIN sections sec ON s.sectionId = sec.id
+LEFT JOIN activation_codes ac ON ac.national_id = s.nationalId
+ORDER BY s.lastName, s.firstName
+  `);
+
+  const students: any[] = [];
+
+  while (stmt.step()) {
+    const row = stmt.getAsObject() as any;
+    const voucher = row.voucher ? String(row.voucher).trim() : "";
+    const nationalId = row.nationalId ? String(row.nationalId).trim() : "";
+
+    students.push({
+      ...row,
+      voucher,
+      activationUrl: voucher
+        ? `https://activationphone.progtalamid.com/?v=${encodeURIComponent(voucher)}&id=${encodeURIComponent(nationalId)}`
+        : ""
+    });
+  }
+
+  stmt.free();
+  return students;
+}
+
+async getStudents(): Promise<any[]> {
+  return await this.getStudentsWithActivationData();
+}
+
+async getAllStudents(): Promise<any[]> {
+  return await this.getStudentsWithActivationData();
+}
+
+
+
+
 // دالة إنشاء أو جلب القسم
 
  
@@ -151,7 +268,23 @@ return { id: newId, name: cleanName, code: cleanCode };
 
 
 
+async getStudentsByLevelAndSection(levelId: string, sectionId: string): Promise<any[]> {
+  const stmt = this.db.prepare(`
+    SELECT * FROM students
+    WHERE levelId = ? AND sectionId = ?
+    AND status = 'متمدرس'
+  `);
 
+  stmt.bind([levelId, sectionId]);
+
+  const students: any[] = [];
+  while (stmt.step()) {
+    students.push(stmt.getAsObject());
+  }
+
+  stmt.free();
+  return students;
+}
 
     
 
@@ -236,11 +369,12 @@ return { id: newId, name: cleanName, code: cleanCode };
       const db = await this.openIndexedDB();
       const transaction = db.transaction([this.storeName], 'readwrite');
       const store = transaction.objectStore(this.storeName);
-      
+      store.put({ data: Array.from(data) }, 'data');
+
       return new Promise((resolve, reject) => {
-        const request = store.put({ data: Array.from(data) }, 'data');
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve();
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
       });
     } catch (error) {
       console.error('خطأ في حفظ البيانات إلى IndexedDB:', error);
@@ -248,8 +382,42 @@ return { id: newId, name: cleanName, code: cleanCode };
     }
   }
 
+  private migrateAttendanceCloudLinks() {
+    const schema = this.db.exec(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'attendance_cloud_links'"
+    )[0]?.values[0]?.[0];
+    if (!schema || String(schema).includes("'schedule'")) return;
+
+    // CREATE TABLE IF NOT EXISTS does not update CHECK constraints in saved databases.
+    // Rebuild within a savepoint so existing links survive any migration failure.
+    this.db.run('SAVEPOINT migrate_attendance_cloud_links');
+    try {
+      this.db.run(`CREATE TABLE attendance_cloud_links_migrated (
+        record_type TEXT NOT NULL CHECK (record_type IN ('student', 'teacher', 'schedule')),
+        local_ref TEXT NOT NULL,
+        cloud_id TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        PRIMARY KEY (record_type, local_ref),
+        UNIQUE (record_type, cloud_id)
+      )`);
+      this.db.run(`INSERT INTO attendance_cloud_links_migrated (record_type, local_ref, cloud_id, updatedAt)
+        SELECT record_type, local_ref, cloud_id, updatedAt FROM attendance_cloud_links`);
+      this.db.run('DROP TABLE attendance_cloud_links');
+      this.db.run('ALTER TABLE attendance_cloud_links_migrated RENAME TO attendance_cloud_links');
+      this.db.run('RELEASE SAVEPOINT migrate_attendance_cloud_links');
+    } catch (error) {
+      this.db.run('ROLLBACK TO SAVEPOINT migrate_attendance_cloud_links');
+      this.db.run('RELEASE SAVEPOINT migrate_attendance_cloud_links');
+      throw error;
+    }
+  }
+
   private async createTables() {
     const tables = [
+      `CREATE TABLE IF NOT EXISTS local_admin_access (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        credentials TEXT NOT NULL
+      )`,
       // جدول المستويات
       `CREATE TABLE IF NOT EXISTS levels (
         id TEXT PRIMARY KEY,
@@ -375,6 +543,19 @@ return { id: newId, name: cleanName, code: cleanCode };
         FOREIGN KEY (student_id) REFERENCES students(nationalId)
       )`,
 
+  
+`CREATE TABLE IF NOT EXISTS activation_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id TEXT UNIQUE,
+  national_id TEXT,
+  code TEXT UNIQUE,
+  used INTEGER DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+)`,
+'CREATE INDEX IF NOT EXISTS idx_activation_codes_student_id ON activation_codes(student_id)',
+'CREATE INDEX IF NOT EXISTS idx_activation_codes_national_id ON activation_codes(national_id)',
+'CREATE INDEX IF NOT EXISTS idx_activation_codes_code ON activation_codes(code)',
       // الجداول الإضافية حسب المخطط
       `CREATE TABLE IF NOT EXISTS classes (
         id TEXT PRIMARY KEY,
@@ -473,6 +654,15 @@ return { id: newId, name: cleanName, code: cleanCode };
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
       )`,
 
+      `CREATE TABLE IF NOT EXISTS mobility_records (
+        id TEXT PRIMARY KEY,
+        record_type TEXT NOT NULL,
+        student_id TEXT NOT NULL DEFAULT '',
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+
       `CREATE TABLE IF NOT EXISTS absentees (
         id TEXT PRIMARY KEY,
         student_id TEXT NOT NULL,
@@ -507,15 +697,23 @@ return { id: newId, name: cleanName, code: cleanCode };
       )`,
 
       // جدول إعدادات المؤسسة
-      `CREATE TABLE IF NOT EXISTS institution_settings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        academy TEXT,
-        directorate TEXT,
-        municipality TEXT,
-        institution TEXT,
-        academicYear TEXT,
-        updatedAt TEXT NOT NULL
-      )`,
+ `CREATE TABLE IF NOT EXISTS institution_settings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  academy TEXT,
+  directorate TEXT,
+  municipality TEXT,
+  institution TEXT,
+  academicYear TEXT,
+  institutionCode TEXT,
+  supabaseInstitutionId TEXT,
+  institutionActivationCode TEXT,
+  institutionSlug TEXT,
+  institutionPhone TEXT,
+  institutionEmail TEXT,
+  licenseKey TEXT,
+  subscriptionPlan TEXT,
+  updatedAt TEXT NOT NULL
+)`,
 
       // جدول جداول الحصص (من ProgMawarid)
       `CREATE TABLE IF NOT EXISTS timetable (
@@ -561,6 +759,51 @@ return { id: newId, name: cleanName, code: cleanCode };
         createdAt TEXT NOT NULL
       )`,
 
+      `CREATE TABLE IF NOT EXISTS attendance_cloud_links (
+        record_type TEXT NOT NULL CHECK (record_type IN ('student', 'teacher', 'schedule')),
+        local_ref TEXT NOT NULL,
+        cloud_id TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        PRIMARY KEY (record_type, local_ref),
+        UNIQUE (record_type, cloud_id)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS attendance_received (
+        institution_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        PRIMARY KEY (institution_id, session_id)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS attendance_sync_success (
+        user_id TEXT PRIMARY KEY,
+        institution_id TEXT NOT NULL,
+        succeeded_at TEXT NOT NULL
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS attendance_teacher_roster (
+        national_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        username TEXT,
+        updatedAt TEXT NOT NULL
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS attendance_subject_mappings (
+        subject_code TEXT PRIMARY KEY,
+        subject_name_arabic TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS attendance_local_justifications (
+        mark_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL CHECK (status IN ('justified', 'unjustified')),
+        note TEXT NOT NULL DEFAULT '',
+        updatedBy TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      )`,
+
       // جدول نماذج الرسائل
       `CREATE TABLE IF NOT EXISTS message_templates (
         id TEXT PRIMARY KEY,
@@ -577,65 +820,155 @@ return { id: newId, name: cleanName, code: cleanCode };
         evolution_instance_name TEXT,
         evolution_api_key TEXT,
         is_active INTEGER DEFAULT 1
-      )`
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS discipline_categories (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'negative',
+        severity INTEGER,
+        createdAt TEXT NOT NULL
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS discipline_actions (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        createdAt TEXT NOT NULL
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS student_incidents (
+        id TEXT PRIMARY KEY,
+        studentId TEXT NOT NULL,
+        studentName TEXT NOT NULL,
+        section TEXT,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        incidentDate TEXT NOT NULL,
+        incidentTime TEXT NOT NULL,
+        location TEXT NOT NULL,
+        details TEXT NOT NULL,
+        categoryId TEXT NOT NULL,
+        categoryName TEXT NOT NULL,
+        severity INTEGER,
+        points REAL NOT NULL DEFAULT 0,
+        reporterType TEXT NOT NULL,
+        reporterName TEXT,
+        actions TEXT NOT NULL DEFAULT '[]',
+        reviewedAt TEXT,
+        reviewedBy TEXT,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (studentId) REFERENCES students(id) ON DELETE CASCADE
+      )`,
+
+      'CREATE INDEX IF NOT EXISTS idx_student_incidents_student ON student_incidents(studentId)',
+      'CREATE INDEX IF NOT EXISTS idx_student_incidents_date ON student_incidents(incidentDate)',
+      'CREATE INDEX IF NOT EXISTS idx_student_incidents_status ON student_incidents(status)'
     ];
 
     for (const tableSQL of tables) {
       this.db.run(tableSQL);
     }
 
-    // ترحيل جدول whatsapp_settings من الهيكل القديم إلى الجديد
-    try {
-      const checkColumns = this.db.prepare("PRAGMA table_info(whatsapp_settings)");
-      const columns: any[] = [];
-      while (checkColumns.step()) {
-        columns.push(checkColumns.getAsObject());
+    this.migrateAttendanceCloudLinks();
+
+    const getColumnNames = (tableName: string): string[] => {
+      const columnStmt = this.db.prepare(`PRAGMA table_info(${tableName})`);
+      const columns: string[] = [];
+      try {
+        while (columnStmt.step()) {
+          columns.push(String(columnStmt.getAsObject().name));
+        }
+      } finally {
+        columnStmt.free();
       }
-      checkColumns.free();
+      return columns;
+    };
 
-      const columnNames = columns.map((col: any) => col.name);
-      const hasOldStructure = columnNames.includes('instance_id') || columnNames.includes('access_token');
-      const hasNewStructure = columnNames.includes('evolution_api_url');
-
-      if (hasOldStructure && !hasNewStructure) {
-        console.log('🔄 ترحيل جدول whatsapp_settings إلى الهيكل الجديد...');
-
-        // إنشاء جدول جديد
-        this.db.run(`
-          CREATE TABLE IF NOT EXISTS whatsapp_settings_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            evolution_api_url TEXT,
-            evolution_instance_name TEXT,
-            evolution_api_key TEXT,
-            is_active INTEGER DEFAULT 1
-          )
-        `);
-
-        // حذف الجدول القديم
-        this.db.run('DROP TABLE IF EXISTS whatsapp_settings');
-
-        // إعادة تسمية الجدول الجديد
-        this.db.run('ALTER TABLE whatsapp_settings_new RENAME TO whatsapp_settings');
-
-        console.log('✅ تم ترحيل جدول whatsapp_settings بنجاح');
-      } else if (!hasNewStructure && columnNames.length > 0) {
-        // الجدول موجود بهيكل غير متوقع، أعد إنشاءه
-        console.log('🔄 إعادة إنشاء جدول whatsapp_settings...');
-        this.db.run('DROP TABLE IF EXISTS whatsapp_settings');
-        this.db.run(`
-          CREATE TABLE whatsapp_settings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            evolution_api_url TEXT,
-            evolution_instance_name TEXT,
-            evolution_api_key TEXT,
-            is_active INTEGER DEFAULT 1
-          )
-        `);
-        console.log('✅ تم إعادة إنشاء جدول whatsapp_settings بنجاح');
-      }
-    } catch (error) {
-      console.error('خطأ في ترحيل جدول whatsapp_settings:', error);
+    const categoryColumns = getColumnNames('discipline_categories');
+    if (!categoryColumns.includes('kind')) {
+      this.db.run("ALTER TABLE discipline_categories ADD COLUMN kind TEXT NOT NULL DEFAULT 'negative'");
     }
+
+    const incidentColumns = getColumnNames('student_incidents');
+    if (!incidentColumns.includes('kind')) {
+      this.db.run("ALTER TABLE student_incidents ADD COLUMN kind TEXT NOT NULL DEFAULT 'negative'");
+    }
+    if (!incidentColumns.includes('status')) {
+      this.db.run("ALTER TABLE student_incidents ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
+    }
+    if (!incidentColumns.includes('points')) {
+      this.db.run('ALTER TABLE student_incidents ADD COLUMN points REAL NOT NULL DEFAULT 0');
+    }
+    if (!incidentColumns.includes('reviewedAt')) {
+      this.db.run('ALTER TABLE student_incidents ADD COLUMN reviewedAt TEXT');
+    }
+    if (!incidentColumns.includes('reviewedBy')) {
+      this.db.run('ALTER TABLE student_incidents ADD COLUMN reviewedBy TEXT');
+    }
+
+    for (const category of DEFAULT_DISCIPLINE_CATEGORIES) {
+      this.db.run(
+        'INSERT OR IGNORE INTO discipline_categories (id, name, kind, severity, createdAt) VALUES (?, ?, ?, ?, ?)',
+        [category.id, category.name, category.kind, category.severity ?? 1, category.createdAt]
+      );
+    }
+    for (const action of DEFAULT_DISCIPLINE_ACTIONS) {
+      this.db.run(
+        'INSERT OR IGNORE INTO discipline_actions (id, name, createdAt) VALUES (?, ?, ?)',
+        [action.id, action.name, action.createdAt]
+      );
+    }
+
+ 
+    // ترحيل جدول whatsapp_settings من الهيكل القديم إلى الجديد
+   // ترحيل جدول institution_settings لإضافة الأعمدة الجديدة إذا كانت القاعدة قديمة
+ try {
+  const stmt = this.db.prepare("PRAGMA table_info(institution_settings)");
+  const columns: any[] = [];
+
+  while (stmt.step()) {
+    columns.push(stmt.getAsObject());
+  }
+  stmt.free();
+
+  const columnNames = columns.map((col: any) => col.name);
+
+  if (!columnNames.includes("institutionCode")) {
+    this.db.run(`ALTER TABLE institution_settings ADD COLUMN institutionCode TEXT`);
+  }
+
+  if (!columnNames.includes("supabaseInstitutionId")) {
+    this.db.run(`ALTER TABLE institution_settings ADD COLUMN supabaseInstitutionId TEXT`);
+  }
+
+  if (!columnNames.includes("institutionActivationCode")) {
+    this.db.run(`ALTER TABLE institution_settings ADD COLUMN institutionActivationCode TEXT`);
+  }
+
+  if (!columnNames.includes("institutionSlug")) {
+    this.db.run(`ALTER TABLE institution_settings ADD COLUMN institutionSlug TEXT`);
+  }
+
+  if (!columnNames.includes("institutionPhone")) {
+    this.db.run(`ALTER TABLE institution_settings ADD COLUMN institutionPhone TEXT`);
+  }
+
+  if (!columnNames.includes("institutionEmail")) {
+    this.db.run(`ALTER TABLE institution_settings ADD COLUMN institutionEmail TEXT`);
+  }
+
+  if (!columnNames.includes("licenseKey")) {
+    this.db.run(`ALTER TABLE institution_settings ADD COLUMN licenseKey TEXT`);
+  }
+
+  if (!columnNames.includes("subscriptionPlan")) {
+    this.db.run(`ALTER TABLE institution_settings ADD COLUMN subscriptionPlan TEXT`);
+  }
+
+  console.log("✅ تم ترحيل institution_settings بنجاح");
+} catch (error) {
+  console.error("❌ خطأ في ترحيل institution_settings:", error);
+}
 
     // إنشاء فهارس لتحسين الأداء
     const indexes = [
@@ -643,6 +976,8 @@ return { id: newId, name: cleanName, code: cleanCode };
       'CREATE INDEX IF NOT EXISTS idx_students_levelId ON students(levelId)',
       'CREATE INDEX IF NOT EXISTS idx_students_sectionId ON students(sectionId)',
       'CREATE INDEX IF NOT EXISTS idx_students_status ON students(status)',
+      'CREATE INDEX IF NOT EXISTS idx_mobility_records_type ON mobility_records(record_type)',
+      'CREATE INDEX IF NOT EXISTS idx_mobility_records_student ON mobility_records(student_id)',
       'CREATE INDEX IF NOT EXISTS idx_attendance_studentId ON attendance_records(studentId)',
       'CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance_records(date)',
       'CREATE INDEX IF NOT EXISTS idx_grades_studentId ON grade_records(studentId)',
@@ -660,6 +995,148 @@ return { id: newId, name: cleanName, code: cleanCode };
       this.db.run(indexSQL);
     }
 
+    await this.saveDatabase();
+  }
+
+  async getDisciplineCategories(): Promise<DisciplineCategory[]> {
+    const stmt = this.db.prepare('SELECT * FROM discipline_categories ORDER BY kind, severity, name');
+    const categories: DisciplineCategory[] = [];
+    try {
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        const kind = String(row.kind) as DisciplineRecordKind;
+        categories.push({
+          id: String(row.id),
+          name: String(row.name),
+          kind,
+          severity: kind === 'negative' ? Number(row.severity) as DisciplineCategory['severity'] : null,
+          createdAt: String(row.createdAt),
+        });
+      }
+    } finally {
+      stmt.free();
+    }
+    return categories;
+  }
+
+  async saveDisciplineCategory(category: Pick<DisciplineCategory, 'id' | 'name' | 'kind' | 'severity'>): Promise<void> {
+    const createdAt = new Date().toISOString();
+    this.db.run(
+      `INSERT INTO discipline_categories (id, name, kind, severity, createdAt) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, severity = excluded.severity`,
+      [category.id, category.name.trim(), category.kind, category.severity ?? 1, createdAt]
+    );
+    await this.saveDatabase();
+  }
+
+  async deleteDisciplineCategory(id: string): Promise<void> {
+    this.db.run('DELETE FROM discipline_categories WHERE id = ?', [id]);
+    await this.saveDatabase();
+  }
+
+  async getDisciplineActions(): Promise<DisciplineAction[]> {
+    const stmt = this.db.prepare('SELECT * FROM discipline_actions ORDER BY name');
+    const actions: DisciplineAction[] = [];
+    try {
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        actions.push({ id: String(row.id), name: String(row.name), createdAt: String(row.createdAt) });
+      }
+    } finally {
+      stmt.free();
+    }
+    return actions;
+  }
+
+  async saveDisciplineAction(action: Pick<DisciplineAction, 'id' | 'name'>): Promise<void> {
+    this.db.run(
+      `INSERT INTO discipline_actions (id, name, createdAt) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name`,
+      [action.id, action.name.trim(), new Date().toISOString()]
+    );
+    await this.saveDatabase();
+  }
+
+  async deleteDisciplineAction(id: string): Promise<void> {
+    this.db.run('DELETE FROM discipline_actions WHERE id = ?', [id]);
+    await this.saveDatabase();
+  }
+
+  async getStudentIncidents(studentId?: string): Promise<StudentIncident[]> {
+    const query = studentId
+      ? 'SELECT * FROM student_incidents WHERE studentId = ? ORDER BY incidentDate DESC, incidentTime DESC, createdAt DESC'
+      : 'SELECT * FROM student_incidents ORDER BY incidentDate DESC, incidentTime DESC, createdAt DESC';
+    const stmt = this.db.prepare(query);
+    const incidents: StudentIncident[] = [];
+    try {
+      if (studentId) stmt.bind([studentId]);
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        incidents.push({
+          id: String(row.id),
+          studentId: String(row.studentId),
+          studentName: String(row.studentName),
+          section: String(row.section ?? ''),
+          kind: String(row.kind) as DisciplineRecordKind,
+          status: String(row.status) as DisciplineRecordStatus,
+          incidentDate: String(row.incidentDate),
+          incidentTime: String(row.incidentTime),
+          location: String(row.location),
+          details: String(row.details),
+          categoryId: String(row.categoryId),
+          categoryName: String(row.categoryName),
+          severity: String(row.kind) === 'negative' ? Number(row.severity) as StudentIncident['severity'] : null,
+          points: Number(row.points) || 0,
+          reporterType: String(row.reporterType) as StudentIncident['reporterType'],
+          reporterName: String(row.reporterName ?? ''),
+          actions: JSON.parse(String(row.actions || '[]')) as string[],
+          reviewedAt: row.reviewedAt == null ? null : String(row.reviewedAt),
+          reviewedBy: row.reviewedBy == null ? null : String(row.reviewedBy),
+          createdAt: String(row.createdAt),
+        });
+      }
+    } finally {
+      stmt.free();
+    }
+    return incidents;
+  }
+
+  async addStudentIncident(incident: NewStudentIncident): Promise<string> {
+    const studentStmt = this.db.prepare('SELECT id FROM students WHERE id = ?');
+    studentStmt.bind([incident.studentId]);
+    const studentExists = studentStmt.step();
+    studentStmt.free();
+    if (!studentExists) throw new Error('التلميذ المحدد غير موجود في قاعدة بيانات المؤسسة.');
+
+    const id = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    this.db.run(
+      `INSERT INTO student_incidents (
+        id, studentId, studentName, section, kind, status, incidentDate, incidentTime,
+        location, details, categoryId, categoryName, severity, points, reporterType,
+        reporterName, actions, reviewedAt, reviewedBy, createdAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, incident.studentId, incident.studentName, incident.section, incident.kind,
+        incident.status, incident.incidentDate, incident.incidentTime, incident.location,
+        incident.details, incident.categoryId, incident.categoryName, incident.severity ?? 1,
+        incident.points, incident.reporterType, incident.reporterName, JSON.stringify(incident.actions),
+        incident.reviewedAt, incident.reviewedBy, createdAt,
+      ]
+    );
+    await this.saveDatabase();
+    return id;
+  }
+
+  async reviewStudentIncident(id: string, status: Extract<DisciplineRecordStatus, 'approved' | 'rejected'>, reviewer?: string): Promise<void> {
+    this.db.run(
+      `UPDATE student_incidents SET status = ?, reviewedAt = ?, reviewedBy = ?
+       WHERE id = ? AND status = 'pending'`,
+      [status, new Date().toISOString(), reviewer?.trim() || null, id]
+    );
+    if (this.db.getRowsModified() === 0) {
+      throw new Error('تعذر تحديث الملاحظة؛ ربما تمت مراجعتها من قبل.');
+    }
     await this.saveDatabase();
   }
 ////////////////////// levelssssssssssssssssssssssssss
@@ -740,7 +1217,7 @@ return { id: newId, name: cleanName, code: cleanCode };
       const sections: any[] = [];
       while (stmt.step()) {
         const row = stmt.getAsObject();
-        sections.push({
+        sections.push ({
           class_id: row.id,
           class_name: row.name,
           level_id: row.levelId
@@ -819,6 +1296,17 @@ return { id: newId, name: cleanName, code: cleanCode };
     }
   }
 
+async updateStudentPhone(id: string, phone: string): Promise<void> {
+  await this.initialize();
+
+  this.db.run(
+    `UPDATE students SET phone = ?, updatedAt = ? WHERE id = ?`,
+    [phone, new Date().toISOString(), id]
+  );
+
+  await this.saveDatabase();
+}
+
   async getAcademicYearByYear(year: string): Promise<AcademicYear | null> {
     const stmt = this.db.prepare('SELECT * FROM academic_years WHERE year = ?');
     try {
@@ -890,6 +1378,148 @@ return { id: newId, name: cleanName, code: cleanCode };
       console.error('خطأ في تعيين السنة الدراسية الحالية:', error);
       throw error;
     }
+  }
+
+async ensurePhoneImportColumns(): Promise<void> {
+  await this.initialize();
+
+  try {
+    const stmt = this.db.prepare("PRAGMA table_info(students)");
+    const columns: any[] = [];
+
+    while (stmt.step()) {
+      columns.push(stmt.getAsObject());
+    }
+    stmt.free();
+
+    const columnNames = columns.map((c: any) => String(c.name || "").trim());
+
+    if (!columnNames.includes("fatherPhone")) {
+      this.db.run(`ALTER TABLE students ADD COLUMN fatherPhone TEXT`);
+    }
+
+    if (!columnNames.includes("motherPhone")) {
+      this.db.run(`ALTER TABLE students ADD COLUMN motherPhone TEXT`);
+    }
+
+    if (!columnNames.includes("phoneSource")) {
+      this.db.run(`ALTER TABLE students ADD COLUMN phoneSource TEXT`);
+    }
+
+    await this.saveDatabase();
+    console.log("✅ تم التحقق من أعمدة استيراد الهواتف");
+  } catch (error) {
+    console.error("❌ خطأ أثناء ترحيل أعمدة استيراد الهواتف:", error);
+    throw error;
+  }
+}
+
+
+  // إدارة النقل والتحويلات
+  async getLocalMobilityRecords<T>(recordType: string): Promise<T[]> {
+    await this.initialize();
+    const stmt = this.db.prepare(
+      'SELECT payload FROM mobility_records WHERE record_type = ? ORDER BY rowid'
+    );
+    const records: T[] = [];
+
+    try {
+      stmt.bind([recordType]);
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as { payload: string };
+        records.push(JSON.parse(row.payload) as T);
+      }
+      return records;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  async saveLocalMobilityRecord(
+    recordType: string,
+    id: string,
+    studentId: string,
+    payload: unknown,
+    createdAt: string
+  ): Promise<void> {
+    await this.initialize();
+    const now = new Date().toISOString();
+    this.db.run(
+      `INSERT INTO mobility_records (id, record_type, student_id, payload, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         record_type = excluded.record_type,
+         student_id = excluded.student_id,
+         payload = excluded.payload,
+         updated_at = excluded.updated_at`,
+      [id, recordType, studentId, JSON.stringify(payload), createdAt || now, now]
+    );
+    await this.saveDatabase();
+  }
+
+  async replaceLocalMobilityRecords(
+    recordType: string,
+    records: Array<{ id: string; studentId?: string; createdAt?: string }>
+  ): Promise<void> {
+    await this.initialize();
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      this.db.run('DELETE FROM mobility_records WHERE record_type = ?', [recordType]);
+      const now = new Date().toISOString();
+      for (const record of records) {
+        this.db.run(
+          `INSERT INTO mobility_records (id, record_type, student_id, payload, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            record.id,
+            recordType,
+            record.studentId || '',
+            JSON.stringify(record),
+            record.createdAt || now,
+            now
+          ]
+        );
+      }
+      this.db.run('COMMIT');
+      await this.saveDatabase();
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async deleteLocalMobilityRecord(recordType: string, id: string): Promise<void> {
+    await this.initialize();
+    this.db.run(
+      'DELETE FROM mobility_records WHERE record_type = ? AND id = ?',
+      [recordType, id]
+    );
+    await this.saveDatabase();
+  }
+
+  async deleteLocalMobilityRecords(recordType: string, ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.initialize();
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      for (const id of ids) {
+        this.db.run(
+          'DELETE FROM mobility_records WHERE record_type = ? AND id = ?',
+          [recordType, id]
+        );
+      }
+      this.db.run('COMMIT');
+      await this.saveDatabase();
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async clearLocalMobilityRecords(recordType: string): Promise<void> {
+    await this.initialize();
+    this.db.run('DELETE FROM mobility_records WHERE record_type = ?', [recordType]);
+    await this.saveDatabase();
   }
 
   // إدارة النقل والتحويلات
@@ -1494,17 +2124,74 @@ this.db.exec(`
     return this.db.export();
   }
 
-  async importData(data: Uint8Array): Promise<void> {
-    const SQL = await initSqlJs({
-      locateFile: (file: string) => `https://sql.js.org/dist/${file}`
+  async readLocalAdmin(): Promise<string | null> {
+    await this.initialize();
+    const stmt = this.db.prepare('SELECT credentials FROM local_admin_access WHERE id = 1');
+    try {
+      return stmt.step() ? String(stmt.getAsObject().credentials) : null;
+    } finally { stmt.free(); }
+  }
+
+  private localAdminWriteQueue: Promise<void> = Promise.resolve();
+
+  async writeLocalAdmin(next: string, expected: string | null): Promise<void> {
+    const write = this.localAdminWriteQueue.then(async () => {
+      const previous = await this.readLocalAdmin();
+      if (previous !== expected) throw new Error('تغيرت بيانات حساب الإدارة. أعد تحميل البرنامج ثم حاول مجددًا.');
+      this.db.run('INSERT OR REPLACE INTO local_admin_access (id, credentials) VALUES (1, ?)', [next]);
+      try {
+        await this.saveDatabase();
+      } catch (error) {
+        if (previous === null) this.db.run('DELETE FROM local_admin_access WHERE id = 1');
+        else this.db.run('UPDATE local_admin_access SET credentials = ? WHERE id = 1', [previous]);
+        try { await this.saveDatabase(); } catch { /* Keep the in-memory credentials consistent with the last successful write. */ }
+        throw error;
+      }
     });
-    
-    if (this.db) {
-      this.db.close();
+    this.localAdminWriteQueue = write.catch(() => undefined);
+    return write;
+  }
+
+  async importData(data: Uint8Array): Promise<void> {
+    await this.initialize();
+    const SQL = await initSqlJs({
+      locateFile: () => sqlWasmUrl
+    });
+
+    const replacement = new SQL.Database(data);
+    try {
+      const integrity = replacement.exec('PRAGMA quick_check');
+      const isValid = integrity[0]?.values?.[0]?.[0] === 'ok';
+      const requiredTables = new Set(
+        replacement.exec(
+          "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )[0]?.values?.map(([name]) => name) || []
+      );
+
+      if (!isValid || !['students', 'levels', 'sections'].every((table) => requiredTables.has(table))) {
+        throw new Error('ملف النسخة الاحتياطية غير صالح أو لا يحتوي على قاعدة بيانات المؤسسة.');
+      }
+
+      const previous = this.db;
+      this.db = replacement;
+      try {
+        await this.createTables();
+        await this.saveDatabase();
+      } catch (error) {
+        this.db = previous;
+        try {
+          await this.saveDatabase();
+        } catch (restoreError) {
+          console.error('تعذر استعادة قاعدة البيانات السابقة بعد فشل الاستيراد:', restoreError);
+        }
+        throw error;
+      }
+
+      previous?.close();
+    } catch (error) {
+      if (this.db !== replacement) replacement.close();
+      throw error;
     }
-    
-    this.db = new SQL.Database(data);
-    await this.saveDatabase();
   }
 
   
@@ -1522,175 +2209,213 @@ this.db.exec(`
    * @note يستخدم نظام احتياطي من localStorage إذا لم توجد البيانات في قاعدة البيانات
    * @note يقوم بإعادة مزامنة localStorage إلى قاعدة البيانات تلقائياً
    */
-  async getInstitutionSettings(): Promise<any> {
-    try {
-      if (!this.db) {
-        throw new Error('قاعدة البيانات غير مهيأة');
-      }
+ async getInstitutionSettings(): Promise<any> {
+  try {
+    if (!this.db) {
+      throw new Error('قاعدة البيانات غير مهيأة');
+    }
 
-      console.log('🔄 جلب إعدادات المؤسسة من قاعدة البيانات...');
+    console.log('🔄 جلب إعدادات المؤسسة من قاعدة البيانات...');
 
-      console.log('institution_settings raw:', result, Object.keys(result));
+    const stmt = this.db.prepare(`
+      SELECT * FROM institution_settings
+      ORDER BY updatedAt DESC
+      LIMIT 1
+    `);
 
-      
+  let result: any = null;
 
-      const stmt = this.db.prepare('SELECT * FROM institution_settings ORDER BY updatedAt DESC LIMIT 1');
-      console.log('institution_settings raw:', result, Object.keys(result));
+if (stmt.step()) {
+  result = stmt.getAsObject();
+}
 
-      const result = stmt.getAsObject();
-      stmt.free();
+stmt.free();
 
-      if (Object.keys(result).length > 0) {
-        // ✅ إضافة حقول مُستعارة لتوافق مع جميع الأجزاء
-        const settings = {
-          ...result,
-          name: result.institution || '', // مُستعار لورقة الغياب
-          directorateName: result.directorate || '' // مُستعار لورقة الغياب
+if (result) {
+      const settings = {
+        ...result,
+        name: result.institution || '',
+        directorateName: result.directorate || '',
+        code: result.institutionCode || '',
+        supabaseInstitutionId: result.supabaseInstitutionId || '',
+        institutionActivationCode: result.institutionActivationCode || '',
+        institutionSlug: result.institutionSlug || '',
+        institutionPhone: result.institutionPhone || '',
+        institutionEmail: result.institutionEmail || '',
+        licenseKey: result.licenseKey || '',
+        subscriptionPlan: result.subscriptionPlan || ''
+      };
+
+      console.log('✅ تم جلب الإعدادات من قاعدة البيانات:', settings);
+      return settings;
+    }
+
+    console.log('⚠️ لا توجد إعدادات في قاعدة البيانات، محاولة الجلب من localStorage...');
+
+    let settings: any = null;
+
+    const backup = localStorage.getItem('institution_settings_backup');
+    if (backup) {
+      settings = JSON.parse(backup);
+      console.log('✅ تم جلب الإعدادات من institution_settings_backup');
+    }
+
+    if (!settings) {
+      const institutionSettings = localStorage.getItem('institutionSettings');
+      if (institutionSettings) {
+        const parsed = JSON.parse(institutionSettings);
+        settings = {
+          academy: parsed.province || '',
+          directorate: parsed.directorateName || '',
+          municipality: '',
+          institution: parsed.name || '',
+          academicYear: parsed.academicYear || '2025/2026',
+          institutionCode: parsed.code || parsed.institutionCode || '',
+          supabaseInstitutionId: parsed.supabaseInstitutionId || '',
+          institutionActivationCode: parsed.institutionActivationCode || '',
+          institutionSlug: parsed.institutionSlug || '',
+          institutionPhone: parsed.institutionPhone || '',
+          institutionEmail: parsed.institutionEmail || '',
+          licenseKey: parsed.licenseKey || '',
+          subscriptionPlan: parsed.subscriptionPlan || '',
+          name: parsed.name || '',
+          directorateName: parsed.directorateName || ''
         };
+        console.log('✅ تم جلب الإعدادات من institutionSettings');
+      }
+    }
 
-        console.log('✅ تم جلب الإعدادات من قاعدة البيانات:', settings);
-        console.log('📋 التفاصيل:', {
-          academy: settings.academy,
-          directorate: settings.directorate,
-          municipality: settings.municipality,
-          institution: settings.institution,
-          academicYear: settings.academicYear
-        });
+    if (settings) {
+      try {
+        this.db.run('DELETE FROM institution_settings');
 
-        return settings;
+        const insertStmt = this.db.prepare(`
+          INSERT INTO institution_settings (
+            academy,
+            directorate,
+            municipality,
+            institution,
+            academicYear,
+            institutionCode,
+            supabaseInstitutionId,
+            institutionActivationCode,
+            institutionSlug,
+            institutionPhone,
+            institutionEmail,
+            licenseKey,
+            subscriptionPlan,
+            updatedAt
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        insertStmt.run([
+          settings.academy || settings.province || '',
+          settings.directorate || settings.directorateName || '',
+          settings.municipality || '',
+          settings.institution || settings.name || '',
+          settings.academicYear || '2025/2026',
+          settings.institutionCode || settings.code || '',
+          settings.supabaseInstitutionId || '',
+          settings.institutionActivationCode || '',
+          settings.institutionSlug || '',
+          settings.institutionPhone || '',
+          settings.institutionEmail || '',
+          settings.licenseKey || '',
+          settings.subscriptionPlan || '',
+          settings.updatedAt || new Date().toISOString()
+        ]);
+
+        insertStmt.free();
+        await this.saveDatabase();
+      } catch (syncError) {
+        console.warn('⚠️ تعذرت إعادة المزامنة:', syncError);
       }
 
-      // إذا لم توجد في قاعدة البيانات، محاولة الجلب من localStorage
-      console.log('⚠️ لا توجد إعدادات في قاعدة البيانات، محاولة الجلب من localStorage...');
+      return {
+        ...settings,
+        name: settings.institution || settings.name || '',
+        directorateName: settings.directorate || settings.directorateName || '',
+        code: settings.institutionCode || settings.code || ''
+      };
+    }
 
-      // محاولة جلب البيانات من مفاتيح localStorage المختلفة
-      let settings: any = null;
+    return null;
+  } catch (error) {
+    console.warn('❌ خطأ في جلب إعدادات المؤسسة من قاعدة البيانات:', error);
 
-      // 1. المفتاح القديم (من AdvancedInstitutionSettings)
+    try {
       const backup = localStorage.getItem('institution_settings_backup');
       if (backup) {
-        settings = JSON.parse(backup);
-        console.log('✅ تم جلب الإعدادات من institution_settings_backup');
+        return JSON.parse(backup);
       }
+    } catch {}
 
-      // 2. المفتاح الجديد (من settings.ts)
-      if (!settings) {
-        const institutionSettings = localStorage.getItem('institutionSettings');
-        if (institutionSettings) {
-          const parsed = JSON.parse(institutionSettings);
-          // تحويل من الصيغة الجديدة إلى الصيغة القديمة
-          settings = {
-            academy: parsed.province || '',
-            directorate: parsed.directorateName || '',
-            municipality: '',
-            institution: parsed.name || '',
-            academicYear: parsed.academicYear || '2025/2026',
-            name: parsed.name || '',
-            directorateName: parsed.directorateName || ''
-          };
-          console.log('✅ تم جلب الإعدادات من institutionSettings');
-        }
-      }
-
-      if (settings) {
-        console.log('📋 الإعدادات المُحملة:', settings);
-
-        // إعادة حفظها في قاعدة البيانات
-        try {
-          this.db.run('DELETE FROM institution_settings');
-          const stmt = this.db.prepare(`
-            INSERT INTO institution_settings (
-              academy, directorate, municipality, institution, academicYear, updatedAt
-            ) VALUES (?, ?, ?, ?, ?, ?)
-          `);
-          stmt.run([
-            settings.academy || settings.province || '',
-            settings.directorate || settings.directorateName || '',
-            settings.municipality || '',
-            settings.institution || settings.name || '',
-            settings.academicYear || '2025/2026',
-            settings.updatedAt || new Date().toISOString()
-          ]);
-          stmt.free();
-          await this.saveDatabase();
-          console.log('💾 تم إعادة مزامنة الإعدادات إلى قاعدة البيانات');
-        } catch (syncError) {
-          console.warn('⚠️ تعذرت إعادة المزامنة:', syncError);
-        }
-
-        // إضافة الحقول المُستعارة
-        return {
-          ...settings,
-          name: settings.institution || settings.name || '',
-          directorateName: settings.directorate || settings.directorateName || ''
-        };
-      }
-
-      console.log('❌ لم يتم العثور على إعدادات المؤسسة');
-      return null;
-    } catch (error) {
-      console.warn('❌ خطأ في جلب إعدادات المؤسسة من قاعدة البيانات:', error);
-
-      // محاولة أخيرة من localStorage
-      try {
-        const backup = localStorage.getItem('institution_settings_backup');
-        if (backup) {
-          console.log('✅ تم استرجاع الإعدادات من localStorage كحل أخير');
-          return JSON.parse(backup);
-        }
-      } catch (storageError) {
-        console.warn('❌ تعذر الاسترجاع من localStorage أيضاً:', storageError);
-      }
-
-      return null;
-    }
+    return null;
   }
-
+} 
   // حفظ إعدادات المؤسسة مع نظام مزدوج (Database + localStorage)
-  async saveInstitutionSettings(settings: any): Promise<void> {
-    try {
-      if (!this.db) {
-        throw new Error('قاعدة البيانات غير مهيأة');
-      }
-
-      console.log('💾 حفظ إعدادات المؤسسة:', settings);
-
-      // حذف الإعدادات القديمة
-      this.db.run('DELETE FROM institution_settings');
-
-      // إدراج الإعدادات الجديدة
-      const stmt = this.db.prepare(`
-        INSERT INTO institution_settings (
-          academy, directorate, municipality, institution, academicYear, updatedAt
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `);
-
-      stmt.run([
-        settings.academy || '',
-        settings.directorate || '',
-        settings.municipality || '',
-        settings.institution || '',
-        settings.academicYear || '2025/2026',
-        settings.updatedAt || new Date().toISOString()
-      ]);
-
-      stmt.free();
-      await this.saveDatabase();
-
-      // حفظ احتياطي في localStorage للاستقرار الكامل
-      try {
-        localStorage.setItem('institution_settings_backup', JSON.stringify(settings));
-        console.log('💾 تم الحفظ الاحتياطي في localStorage');
-      } catch (storageError) {
-        console.warn('⚠️ تعذر الحفظ الاحتياطي في localStorage:', storageError);
-      }
-
-      console.log('✅ تم حفظ إعدادات المؤسسة في قاعدة البيانات و localStorage');
-    } catch (error) {
-      console.error('❌ خطأ في حفظ إعدادات المؤسسة:', error);
-      throw error;
+ async saveInstitutionSettings(settings: any): Promise<void> {
+  try {
+    if (!this.db) {
+      throw new Error('قاعدة البيانات غير مهيأة');
     }
+console.log("settings before save:", settings);
+console.log("supabaseInstitutionId:", settings?.supabaseInstitutionId);
+    console.log('💾 حفظ إعدادات المؤسسة:', settings);
+console.log("SAVING supabaseInstitutionId =", settings.supabaseInstitutionId);
+    this.db.run('DELETE FROM institution_settings');
+
+    const stmt = this.db.prepare(`
+      INSERT INTO institution_settings (
+        academy,
+        directorate,
+        municipality,
+        institution,
+        academicYear,
+        institutionCode,
+        supabaseInstitutionId,
+        institutionActivationCode,
+        institutionSlug,
+        institutionPhone,
+        institutionEmail,
+        licenseKey,
+        subscriptionPlan,
+        updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    stmt.run([
+      settings.academy || '',
+      settings.directorate || '',
+      settings.municipality || '',
+      settings.institution || '',
+      settings.academicYear || '2025/2026',
+      settings.institutionCode || settings.code || '',
+      settings.supabaseInstitutionId || '',
+      settings.institutionActivationCode || '',
+      settings.institutionSlug || '',
+      settings.institutionPhone || '',
+      settings.institutionEmail || '',
+      settings.licenseKey || '',
+      settings.subscriptionPlan || '',
+      settings.updatedAt || new Date().toISOString()
+    ]);
+
+    stmt.free();
+    await this.saveDatabase();
+
+    try {
+      localStorage.setItem('institution_settings_backup', JSON.stringify(settings));
+    } catch (storageError) {
+      console.warn('⚠️ تعذر الحفظ الاحتياطي في localStorage:', storageError);
+    }
+
+    console.log('✅ تم حفظ إعدادات المؤسسة');
+  } catch (error) {
+    console.error('❌ خطأ في حفظ إعدادات المؤسسة:', error);
+    throw error;
   }
+}
 
   // باقي الدوال الموجودة...
   /**
@@ -1744,36 +2469,9 @@ this.db.exec(`
     await this.saveDatabase();
     return id;
   }
+ 
 
-  /**
-   * الحصول على جميع التلاميذ
-   * يستخدم في: StudentManagement, Dashboard, Reports
-   */
-  async getStudents(): Promise<any[]> {
-    const stmt = this.db.prepare(`
-      SELECT s.*, l.name as levelName, sec.name as sectionName 
-      FROM students s 
-      LEFT JOIN levels l ON s.levelId = l.id 
-      LEFT JOIN sections sec ON s.sectionId = sec.id 
-      ORDER BY s.lastName, s.firstName
-    `);
-    try {
-      const students: any[] = [];
-
-      while (stmt.step()) {
-        const row = stmt.getAsObject() as any;
-        students.push({
-          ...row,
-          socialSupport: Boolean(row.socialSupport),
-          transportService: Boolean(row.transportService)
-        });
-      }
-
-      return students;
-    } finally {
-      stmt.free();
-    }
-  }
+ 
 
   /**
    * الحصول على تلميذ بواسطة المعرف
@@ -2120,6 +2818,10 @@ this.db.exec(`
         request.onsuccess = () => resolve();
       });
 
+      if (window.desktopStorage) {
+        await window.desktopStorage.deleteDatabase();
+      }
+
       // إعادة تعيين حالة التهيئة
       this.isInitialized = false;
 
@@ -2135,13 +2837,70 @@ this.db.exec(`
 
   private async saveDatabase(): Promise<void> {
     if (!this.db) return;
-    
-    try {
-      const data = this.db.export();
+    const data = this.db.export();
+    const write = this.persistenceQueue.catch(() => {}).then(async () => {
+      if (window.desktopStorage) {
+        await window.desktopStorage.writeDatabase(data);
+      }
       await this.saveToIndexedDB(data);
+    });
+    this.persistenceQueue = write;
+    await write;
+  }
+
+  async saveReceivedAttendance(institutionId: string, rows: ReceivedAttendance[]): Promise<void> {
+    await this.initialize();
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      for (const row of rows) {
+        if (row.institution_id !== institutionId || !/^\d+$/.test(row.sync_revision)) {
+          throw new Error('Invalid attendance institution or revision');
+        }
+        this.db.run(`INSERT INTO attendance_received
+          (institution_id, session_id, revision, payload, received_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (institution_id, session_id) DO UPDATE SET
+            revision = excluded.revision, payload = excluded.payload, received_at = excluded.received_at
+          WHERE CAST(excluded.revision AS INTEGER) >= CAST(attendance_received.revision AS INTEGER)`,
+          [institutionId, row.id, row.sync_revision, JSON.stringify(row), new Date().toISOString()]);
+      }
+      this.db.run('COMMIT');
     } catch (error) {
-      console.error('خطأ في حفظ قاعدة البيانات:', error);
+      this.db.run('ROLLBACK');
+      throw error;
     }
+    // Even duplicate deliveries must be persisted before acknowledging them.
+    await this.saveDatabase();
+  }
+
+  async getReceivedAttendance(institutionId: string): Promise<ReceivedAttendance[]> {
+    await this.initialize();
+    const stmt = this.db.prepare('SELECT payload FROM attendance_received WHERE institution_id = ?');
+    try {
+      stmt.bind([institutionId]);
+      const rows: ReceivedAttendance[] = [];
+      while (stmt.step()) rows.push(JSON.parse(String(stmt.getAsObject().payload)));
+      return rows.sort((a, b) => b.lesson_date.localeCompare(a.lesson_date));
+    } finally { stmt.free(); }
+  }
+
+  async getAttendanceSyncSuccess(userId?: string): Promise<{ institutionId: string; lastSuccess: string } | null> {
+    await this.initialize();
+    const stmt = this.db.prepare('SELECT institution_id, succeeded_at FROM attendance_sync_success' +
+      (userId ? ' WHERE user_id = ?' : ' ORDER BY succeeded_at DESC LIMIT 1'));
+    try {
+      if (userId) stmt.bind([userId]);
+      if (!stmt.step()) return null;
+      const row = stmt.getAsObject();
+      return { institutionId: String(row.institution_id), lastSuccess: String(row.succeeded_at) };
+    } finally { stmt.free(); }
+  }
+
+  async saveAttendanceSyncSuccess(userId: string, institutionId: string, at: string): Promise<void> {
+    await this.initialize();
+    this.db.run(`INSERT INTO attendance_sync_success VALUES (?, ?, ?)
+      ON CONFLICT (user_id) DO UPDATE SET institution_id = excluded.institution_id, succeeded_at = excluded.succeeded_at`,
+      [userId, institutionId, at]);
+    await this.saveDatabase();
   }
 
   /**
@@ -2595,6 +3354,53 @@ this.db.exec(`
     await this.saveDatabase();
   }
 
+  async replaceTimetable(entries: Array<{
+    teacher_name_arabic: string;
+    teacher_name_french: string;
+    teacher_id: string;
+    ppr: string;
+    subject_code: string;
+    subject_arabic: string;
+    class: string;
+    room_code: string;
+    room_name: string;
+    day: string;
+    day_arabic: string;
+    time_slot: string;
+    start_time: string;
+    end_time: string;
+    activity_id: string;
+    tags: string;
+  }>): Promise<void> {
+    let committed = false;
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      this.db.run('DELETE FROM timetable');
+      for (const entry of entries) {
+        this.db.run(`
+          INSERT INTO timetable (
+            id, teacher_name_arabic, teacher_name_french, teacher_id, ppr,
+            subject_code, subject_arabic, class, room_code, room_name,
+            day, day_arabic, time_slot, start_time, end_time,
+            activity_id, tags, createdAt
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          crypto.randomUUID(), entry.teacher_name_arabic, entry.teacher_name_french,
+          entry.teacher_id, entry.ppr, entry.subject_code, entry.subject_arabic,
+          entry.class, entry.room_code, entry.room_name, entry.day,
+          entry.day_arabic, entry.time_slot, entry.start_time, entry.end_time,
+          entry.activity_id, entry.tags, new Date().toISOString(),
+        ]);
+      }
+      this.db.run('COMMIT');
+      committed = true;
+      await this.saveDatabase();
+    } catch (error) {
+      if (!committed) this.db.run('ROLLBACK');
+      throw error;
+    }
+  }
+
   /**
    * حذف توزيع الأساتذة القديم
    */
@@ -2836,6 +3642,195 @@ this.db.exec(`
       console.error('❌ خطأ في حفظ إعدادات WhatsApp:', error);
       throw error;
     }
+  }
+
+  async getAttendanceCloudLinks(recordType: 'student' | 'teacher' | 'schedule'): Promise<Record<string, string>> {
+    await this.initialize();
+    const stmt = this.db.prepare(
+      'SELECT local_ref, cloud_id FROM attendance_cloud_links WHERE record_type = ?'
+    );
+    stmt.bind([recordType]);
+    const links: Record<string, string> = {};
+    try {
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as { local_ref: string; cloud_id: string };
+        links[row.local_ref] = row.cloud_id;
+      }
+      return links;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  async saveAttendanceCloudLinks(
+    recordType: 'student' | 'teacher' | 'schedule',
+    links: Array<{ localRef: string; cloudId: string }>
+  ): Promise<void> {
+    await this.initialize();
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      for (const link of links) {
+        this.db.run(
+          `INSERT INTO attendance_cloud_links (record_type, local_ref, cloud_id, updatedAt)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (record_type, local_ref)
+           DO UPDATE SET cloud_id = excluded.cloud_id, updatedAt = excluded.updatedAt`,
+          [recordType, link.localRef, link.cloudId, new Date().toISOString()]
+        );
+      }
+      this.db.run('COMMIT');
+      await this.saveDatabase();
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async getAttendanceTeacherRoster(): Promise<Array<{
+    nationalId: string;
+    displayName: string;
+    username?: string;
+  }>> {
+    await this.initialize();
+    const stmt = this.db.prepare(
+      'SELECT national_id, display_name, username FROM attendance_teacher_roster ORDER BY display_name'
+    );
+    const teachers: Array<{ nationalId: string; displayName: string; username?: string }> = [];
+    try {
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as {
+          national_id: string;
+          display_name: string;
+          username: string | null;
+        };
+        teachers.push({
+          nationalId: row.national_id,
+          displayName: row.display_name,
+          ...(row.username ? { username: row.username } : {}),
+        });
+      }
+      return teachers;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  async saveAttendanceTeacherRoster(teachers: Array<{
+    nationalId: string;
+    displayName: string;
+    username?: string;
+  }>): Promise<void> {
+    await this.initialize();
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      for (const teacher of teachers) {
+        this.db.run(
+          `INSERT INTO attendance_teacher_roster (national_id, display_name, username, updatedAt)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (national_id) DO UPDATE SET
+             display_name = excluded.display_name,
+             username = COALESCE(excluded.username, attendance_teacher_roster.username),
+             updatedAt = excluded.updatedAt`,
+          [teacher.nationalId, teacher.displayName, teacher.username || null, new Date().toISOString()]
+        );
+      }
+      this.db.run('COMMIT');
+      await this.saveDatabase();
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async updateTimetableTimes(
+    updates: Array<{ id: string; start_time: string; end_time: string }>
+  ): Promise<void> {
+    await this.initialize();
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      for (const update of updates) {
+        this.db.run(
+          'UPDATE timetable SET start_time = ?, end_time = ? WHERE id = ?',
+          [update.start_time, update.end_time, update.id]
+        );
+      }
+      this.db.run('COMMIT');
+      await this.saveDatabase();
+    } catch (error) {
+      this.db.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async getAttendanceSubjectMappings(): Promise<Record<string, string>> {
+    await this.initialize();
+    const stmt = this.db.prepare(
+      'SELECT subject_code, subject_name_arabic FROM attendance_subject_mappings ORDER BY subject_code'
+    );
+    const mappings: Record<string, string> = {};
+    try {
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as { subject_code: string; subject_name_arabic: string };
+        mappings[row.subject_code] = row.subject_name_arabic;
+      }
+      return mappings;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  async saveAttendanceSubjectMapping(subjectCode: string, subjectNameArabic: string): Promise<void> {
+    await this.initialize();
+    const code = subjectCode.trim();
+    const name = subjectNameArabic.trim();
+    if (!code || !name) throw new Error('رمز المادة واسمها مطلوبان.');
+    this.db.run(
+      `INSERT INTO attendance_subject_mappings (subject_code, subject_name_arabic, updatedAt)
+       VALUES (?, ?, ?)
+       ON CONFLICT (subject_code)
+       DO UPDATE SET subject_name_arabic = excluded.subject_name_arabic, updatedAt = excluded.updatedAt`,
+      [code, name, new Date().toISOString()]
+    );
+    await this.saveDatabase();
+  }
+
+  async getAttendanceLocalJustifications(markIds: string[]): Promise<Record<string, { status: 'justified' | 'unjustified'; note: string }>> {
+    await this.initialize();
+    if (!markIds.length) return {};
+    const placeholders = markIds.map(() => '?').join(', ');
+    const stmt = this.db.prepare(
+      `SELECT mark_id, status, note FROM attendance_local_justifications
+       WHERE mark_id IN (${placeholders})`
+    );
+    stmt.bind(markIds);
+    const reviews: Record<string, { status: 'justified' | 'unjustified'; note: string }> = {};
+    try {
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as { mark_id: string; status: 'justified' | 'unjustified'; note: string };
+        reviews[row.mark_id] = { status: row.status, note: row.note };
+      }
+      return reviews;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  async saveAttendanceLocalJustification(
+    markId: string,
+    status: 'justified' | 'unjustified',
+    note: string,
+    updatedBy: string
+  ): Promise<void> {
+    await this.initialize();
+    this.db.run(
+      `INSERT INTO attendance_local_justifications (mark_id, status, note, updatedBy, updatedAt)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (mark_id)
+       DO UPDATE SET status = excluded.status, note = excluded.note,
+         updatedBy = excluded.updatedBy, updatedAt = excluded.updatedAt`,
+      [markId, status, note, updatedBy, new Date().toISOString()]
+    );
+    await this.saveDatabase();
   }
 
 }

@@ -385,7 +385,7 @@ export class SubscriptionManager {
   private getOrCreateInstitutionId(): string {
     let id = this.getInstitutionId();
     if (!id) {
-      id = `inst_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      id = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       localStorage.setItem(INSTITUTION_ID_KEY, id);
     }
     return id;

@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { Key, Search, Download, Upload, CreditCard as Edit, Trash2, Plus, Eye, EyeOff, Send } from 'lucide-react';
+ import React, { useState, useEffect } from 'react';
+import { Key, Search, CreditCard as Edit, Trash2, Eye, EyeOff, Send } from 'lucide-react';
 import { dbManager } from '../utils/database';
 import { Student } from '../types';
-import { unifiedWhatsAppService } from '../utils/unifiedWhatsAppService';
-import { supabase } from '../utils/supabaseClient';
+ import { supabase } from '../utils/supabaseClient';
 
 interface Credential {
   student_id: string;
@@ -16,8 +15,7 @@ interface CredentialWithStudent extends Credential {
   studentGrade: string;
   studentSection: string;
   orderNumber: number;
-  guardianPhone?: string;
-  studentPhone?: string;
+  managedPhone?: string;
 }
 
 interface EditingPhone {
@@ -39,10 +37,7 @@ const CredentialsManagement: React.FC = () => {
   const [sendingTo, setSendingTo] = useState<string | null>(null);
   const [editingPhone, setEditingPhone] = useState<EditingPhone | null>(null);
   const [tempPhone, setTempPhone] = useState<string>('');
-  
-  // اختيار جهة الاتصال
-  const [recipientType, setRecipientType] = useState<'student' | 'guardian'>('guardian');
-  
+
   const [messageTemplate, setMessageTemplate] = useState<string>(() =>
     localStorage.getItem('credentials_message_template') ||
     'مرحباً {studentName}\n\nبيانات ولوجك لبوابة متمدرس:\nاسم المستعمل: {studentId}@taalim.ma\nالقن السري: {secretCode}\n\nرابط متمدرس: https://moutamadris.men.gov.ma/moutamadris/Account'
@@ -54,6 +49,12 @@ const CredentialsManagement: React.FC = () => {
     issue_date: new Date().toISOString().split('T')[0]
   });
 
+  const [bulkSendMode, setBulkSendMode] = useState<'section' | 'level'>('section');
+const [bulkSelectedLevel, setBulkSelectedLevel] = useState<string>('');
+const [bulkSelectedSections, setBulkSelectedSections] = useState<string[]>([]);
+const [bulkSending, setBulkSending] = useState(false);
+const [bulkProgress, setBulkProgress] = useState(0);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -61,6 +62,80 @@ const CredentialsManagement: React.FC = () => {
   useEffect(() => {
     filterCredentials();
   }, [credentials, searchTerm, gradeFilter, sectionFilter]);
+
+  const sortSectionNames = (sections: string[]) => {
+    const parseSection = (value: string) => {
+      const text = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+      const match = text.match(/^(\d+)APIC[\- ]?(\d+)$/i) || text.match(/^(\d+)APIC(\d+)$/i);
+
+      if (match) {
+        return {
+          levelNum: Number(match[1]),
+          sectionNum: Number(match[2]),
+          isParsed: true,
+        };
+      }
+
+      return {
+        levelNum: Number.MAX_SAFE_INTEGER,
+        sectionNum: Number.MAX_SAFE_INTEGER,
+        isParsed: false,
+      };
+    };
+
+    return [...sections].sort((a, b) => {
+      const pa = parseSection(a);
+      const pb = parseSection(b);
+
+      if (pa.isParsed && pb.isParsed) {
+        if (pa.levelNum !== pb.levelNum) return pa.levelNum - pb.levelNum;
+        return pa.sectionNum - pb.sectionNum;
+      }
+
+      if (pa.isParsed && !pb.isParsed) return -1;
+      if (!pa.isParsed && pb.isParsed) return 1;
+
+      return String(a).localeCompare(String(b), 'ar');
+    });
+  };
+
+  const sortGradeNames = (grades: string[]) => {
+    const parseGrade = (value: string) => {
+      const text = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+      const match = text.match(/^(\d+)APIC$/i);
+
+      if (match) {
+        return {
+          levelNum: Number(match[1]),
+          isParsed: true,
+        };
+      }
+
+      return {
+        levelNum: Number.MAX_SAFE_INTEGER,
+        isParsed: false,
+      };
+    };
+
+    return [...grades].sort((a, b) => {
+      const pa = parseGrade(a);
+      const pb = parseGrade(b);
+
+      if (pa.isParsed && pb.isParsed) {
+        return pa.levelNum - pb.levelNum;
+      }
+
+      if (pa.isParsed && !pb.isParsed) return -1;
+      if (!pa.isParsed && pb.isParsed) return 1;
+
+      return String(a).localeCompare(String(b), 'ar');
+    });
+  };
+
+const getManagedPhoneValue = (student: any) => {
+  return String(student?.phone || "").trim();
+};
+
 
   // تحميل البيانات
   const loadData = async () => {
@@ -72,19 +147,19 @@ const CredentialsManagement: React.FC = () => {
 
       setStudents(studentsData);
 
-      // ربط الأكواد السرية بمعلومات التلاميذ باستخدام nationalId
       const credentialsWithStudents = credentialsData.map((credential, index) => {
-        const student = studentsData.find(s => s.nationalId === credential.student_id);
-        return {
-          ...credential,
-          studentName: student ? `${student.firstName} ${student.lastName}` : 'تلميذ غير معروف',
-          studentGrade: student?.grade || '',
-          studentSection: student?.section || '',
-          orderNumber: index + 1,
-          guardianPhone: student?.guardianPhone || '',
-          studentPhone: student?.phone || ''
-        };
-      });
+  const student = studentsData.find(s => s.nationalId === credential.student_id);
+  const managedPhone = getManagedPhoneValue(student);
+
+  return {
+    ...credential,
+    studentName: student ? `${student.firstName} ${student.lastName}` : 'تلميذ غير معروف',
+    studentGrade: student?.grade || student?.level || '',
+    studentSection: student?.section || student?.sectionName || '',
+    orderNumber: index + 1,
+    managedPhone
+  };
+});
 
       setCredentials(credentialsWithStudents);
     } catch (error) {
@@ -135,33 +210,34 @@ const CredentialsManagement: React.FC = () => {
     }
   };
 
-  // تعديل رقم الهاتف
-  const handleUpdatePhone = async (studentId: string, newPhone: string) => {
+  // تعديل الهاتف المعتمد
+  const handleUpdatePhone = async (studentNationalId: string, newPhone: string) => {
     try {
       await dbManager.initialize();
 
-      // تحديث رقم الهاتف في قاعدة البيانات
-      const student = students.find(s => s.nationalId === studentId);
-      if (student) {
-        await dbManager.updateStudent({
-          ...student,
-          guardianPhone: newPhone
-        });
+      const student = students.find(s => s.nationalId === studentNationalId);
+      if (!student) {
+        alert('التلميذ غير موجود');
+        return;
       }
 
-      // تحديث القائمة المحلية
-      setCredentials(prev => prev.map(c =>
-        c.student_id === studentId ? { ...c, guardianPhone: newPhone } : c
-      ));
+      await dbManager.updateStudent(student.id, {
+        phone: newPhone,
+        updatedAt: new Date().toISOString()
+      });
+
+      setCredentials(prev =>
+        prev.map(c =>
+          c.student_id === studentNationalId ? { ...c, managedPhone: newPhone } : c
+        )
+      );
 
       setEditingPhone(null);
-      alert('✅ تم تحديث رقم الهاتف بنجاح');
-
-      // إعادة تحميل البيانات
+      alert('✅ تم تحديث الهاتف المعتمد بنجاح');
       await loadData();
     } catch (error) {
-      console.error('خطأ في تحديث رقم الهاتف:', error);
-      alert('خطأ في تحديث رقم الهاتف');
+      console.error('خطأ في تحديث الهاتف:', error);
+      alert('خطأ في تحديث الهاتف');
     }
   };
 
@@ -177,114 +253,204 @@ const CredentialsManagement: React.FC = () => {
     }
   };
 
-  // إرسال الكود السري عبر واتساب
-  const handleSendToWhatsApp = async (credential: CredentialWithStudent) => {
-    // ✅ اختيار الرقم حسب النوع
-    const phoneNumber = recipientType === 'student' ? credential.studentPhone : credential.guardianPhone;
-    const recipientLabel = recipientType === 'student' ? 'التلميذ' : 'ولي الأمر';
+  // إرسال الكود السري عبر واتساب للهاتف المعتمد فقط
+ const handleSendToWhatsApp = async (credential: CredentialWithStudent) => {
+  const phoneNumber = String(credential.managedPhone || '').trim();
 
-    if (!phoneNumber) {
-      alert(`رقم هاتف ${recipientLabel} غير متوفر لهذا التلميذ`);
+  if (!phoneNumber) {
+    alert('رقم الهاتف المعتمد غير متوفر لهذا التلميذ.');
+    return;
+  }
+
+  setSendingTo(credential.student_id);
+
+  try {
+    await dbManager.initialize();
+    const settings = await dbManager.getInstitutionSettings();
+
+    const institutionId =
+      settings?.supabaseInstitutionId ||
+      settings?.supabase_institution_id ||
+      settings?.institutionId;
+
+    if (!institutionId) {
+      alert('⚠️ لم يتم العثور على معرف المؤسسة. يرجى تفعيل البرنامج أولاً.');
       return;
     }
 
-    setSendingTo(credential.student_id);
+    const { data: inst, error } = await supabase
+      .from('institutions')
+      .select('whatsapp_session_status')
+      .eq('id', institutionId)
+      .single();
 
-    try {
-      console.log(`🔍 إرسال كود سري عبر Waaku إلى ${recipientLabel}`);
-
-      // التحقق من الاتصال
-      const institutionId = localStorage.getItem('institutionId');
-      
-      if (!institutionId) {
-        alert('⚠️ لم يتم العثور على معرف المؤسسة. يرجى الذهاب إلى صفحة ربط WhatsApp أولاً.');
-        setSendingTo(null);
-        return;
-      }
-
-      const { data: inst } = await supabase
-        .from('institutions')
-        .select('whatsapp_session_status')
-        .eq('id', institutionId)
-        .single();
-
-      if (!inst || inst.whatsapp_session_status !== 'CONNECTED') {
-        alert('⚠️ جلسة WhatsApp غير متصلة. يرجى الذهاب إلى صفحة ربط WhatsApp وإنشاء جلسة جديدة.');
-        setSendingTo(null);
-        return;
-      }
-
-      // تخصيص الرسالة
-      const student = students.find(s => s.nationalId === credential.student_id);
-      const message = messageTemplate
-        .replace(/{studentName}/g, credential.studentName)
-        .replace(/{studentId}/g, credential.student_id)
-        .replace(/{secretCode}/g, credential.secret_code)
-        .replace(/{email}/g, student?.email || 'غير متوفر')
-        .replace(/{level}/g, credential.studentGrade || '')
-        .replace(/{section}/g, credential.studentSection || '');
-
-      console.log(`📤 إرسال رسالة واتساب إلى ${recipientLabel}:`, phoneNumber);
-
-      // استخدام Waaku
-      const result = await unifiedWhatsAppService.sendMessage(phoneNumber, message);
-
-      if (result.success) {
-        console.log(`✅ نجح إرسال الكود السري إلى ${recipientLabel}:`, credential.studentName);
-        alert(`✅ تم إرسال الكود السري بنجاح إلى ${recipientLabel} (${phoneNumber})`);
-      } else {
-        console.error(`❌ فشل إرسال الكود السري إلى ${recipientLabel}:`, result.message);
-        alert(`❌ فشل إرسال الكود السري: ${result.message}`);
-      }
-
-    } catch (error) {
-      console.error('❌ خطأ في إرسال الرسالة:', error);
-      alert('❌ حدث خطأ أثناء إرسال الكود السري. يرجى المحاولة مرة أخرى.');
-    } finally {
-      setSendingTo(null);
+    if (error) {
+      console.error('خطأ في التحقق من جلسة واتساب:', error);
+      alert('⚠️ حدث خطأ أثناء التحقق من جلسة WhatsApp.');
+      return;
     }
-  };
 
-  // تصدير الأكواد السرية
-  const handleExportCredentials = () => {
-    const dataToExport = filteredCredentials.map((credential) => ({
-      'الرقم الترتيبي': credential.orderNumber,
-      'رقم التلميذ': credential.student_id,
-      'اسم التلميذ': credential.studentName,
-      'الصف': credential.studentGrade,
-      'القسم': credential.studentSection,
-      'الكود السري': credential.secret_code,
-      'تاريخ الإصدار': credential.issue_date
-    }));
+    const message = buildCredentialMessage(credential);
 
-    // إنشاء ملف CSV
-    const csvContent = [
-      Object.keys(dataToExport[0]).join(','),
-      ...dataToExport.map(row => Object.values(row).join(','))
-    ].join('\n');
+    const res = await fetch('https://queue.progtalamid.com/enqueue', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        institution_id: institutionId,
+        phone: phoneNumber,
+        message,
+        priority: 2,
+      }),
+    });
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `الأكواد_السرية_${new Date().toISOString().split('T')[0]}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
 
-  // الحصول على الصفوف الفريدة
+    alert(`✅ تم إضافة رسالة القن السري إلى قائمة الانتظار بنجاح: ${phoneNumber}`);
+  } catch (error) {
+    console.error('❌ خطأ في إرسال الرسالة:', error);
+    alert('❌ حدث خطأ أثناء إرسال القن السري.');
+  } finally {
+    setSendingTo(null);
+  }
+};
+
+
+const handleBulkSendCredentials = async () => {
+  const recipients = getBulkRecipients();
+
+  if (recipients.length === 0) {
+    alert('⚠️ لا يوجد تلاميذ مطابقون للاختيار أو لا توجد أرقام هاتف معتمدة.');
+    return;
+  }
+
+  const confirmMessage =
+    bulkSendMode === 'level'
+      ? `هل أنت متأكد من إرسال القن السري إلى ${recipients.length} تلميذ(ة) في المستوى ${bulkSelectedLevel}؟`
+      : `هل أنت متأكد من إرسال القن السري إلى ${recipients.length} تلميذ(ة) في الأقسام المحددة؟`;
+
+  if (!confirm(confirmMessage)) return;
+
+  setBulkSending(true);
+  setBulkProgress(0);
+
+  try {
+    await dbManager.initialize();
+    const settings = await dbManager.getInstitutionSettings();
+
+    const institutionId =
+      settings?.supabaseInstitutionId ||
+      settings?.supabase_institution_id ||
+      settings?.institutionId;
+
+    if (!institutionId) {
+      alert('⚠️ لم يتم العثور على معرف المؤسسة. يرجى تفعيل البرنامج أولاً.');
+      return;
+    }
+
+    const { data: inst, error } = await supabase
+      .from('institutions')
+      .select('whatsapp_session_status')
+      .eq('id', institutionId)
+      .single();
+
+    if (error) {
+      console.error('خطأ في التحقق من جلسة واتساب:', error);
+      alert('⚠️ حدث خطأ أثناء التحقق من جلسة WhatsApp.');
+      return;
+    }
+
+    // إذا أردت لاحقًا التحقق الفعلي من الحالة فعّل هذا الشرط:
+    // if (inst?.whatsapp_session_status !== 'connected') {
+    //   alert('⚠️ جلسة WhatsApp غير متصلة.');
+    //   return;
+    // }
+
+    for (let i = 0; i < recipients.length; i++) {
+      const credential = recipients[i];
+      const phone = String(credential.managedPhone || '').trim();
+
+      if (!phone) continue;
+
+      const personalizedMessage = buildCredentialMessage(credential);
+
+      const res = await fetch('https://queue.progtalamid.com/enqueue', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          institution_id: institutionId,
+          phone,
+          message: personalizedMessage,
+          priority: 2,
+        }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+
+      setBulkProgress(Math.round(((i + 1) / recipients.length) * 100));
+    }
+
+    alert(`✅ تم إضافة ${recipients.length} رسالة قن سري إلى قائمة الانتظار بنجاح.`);
+  } catch (error) {
+    console.error('❌ خطأ في الإرسال الجماعي للأكواد السرية:', error);
+    alert('❌ حدث خطأ أثناء تجهيز الإرسال الجماعي للقن السري.');
+  } finally {
+    setBulkSending(false);
+    setBulkProgress(0);
+  }
+};
   const getUniqueGrades = () => {
-    return Array.from(new Set(students.map(s => s.grade).filter(Boolean)));
+    const grades = Array.from(new Set(credentials.map(c => c.studentGrade).filter(Boolean)));
+    return sortGradeNames(grades);
   };
 
-  // الحصول على الأقسام الفريدة
   const getUniqueSections = () => {
-    return Array.from(new Set(students.map(s => s.section).filter(Boolean)));
+    const sections = Array.from(new Set(credentials.map(c => c.studentSection).filter(Boolean)));
+    return sortSectionNames(sections);
   };
 
-  // توليد كود سري عشوائي
+  const getBulkRecipients = () => {
+  let filtered: CredentialWithStudent[] = [];
+
+  if (bulkSendMode === 'level' && bulkSelectedLevel) {
+    filtered = credentials.filter(
+      c =>
+        c.studentGrade === bulkSelectedLevel &&
+        String(c.managedPhone || '').trim()
+    );
+  }
+
+  if (bulkSendMode === 'section' && bulkSelectedSections.length > 0) {
+    filtered = credentials.filter(
+      c =>
+        bulkSelectedSections.includes(c.studentSection) &&
+        String(c.managedPhone || '').trim()
+    );
+  }
+
+  return filtered;
+};
+
+const buildCredentialMessage = (credential: CredentialWithStudent) => {
+  const student = students.find(s => s.nationalId === credential.student_id);
+
+  return messageTemplate
+    .replace(/{studentName}/g, credential.studentName)
+    .replace(/{studentId}/g, credential.student_id)
+    .replace(/{secretCode}/g, credential.secret_code)
+    .replace(/{email}/g, student?.email || 'غير متوفر')
+    .replace(/{level}/g, credential.studentGrade || '')
+    .replace(/{section}/g, credential.studentSection || '');
+};
   const generateRandomCode = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let result = '';
@@ -331,38 +497,16 @@ const CredentialsManagement: React.FC = () => {
           </div>
         </div>
 
-        {/* اختيار جهة الاتصال */}
+        {/* الهاتف المعتمد */}
         <div className="bg-gradient-to-r from-green-50 to-teal-50 border-2 border-green-300 rounded-lg shadow-md p-4 mb-6">
-          <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
+          <h3 className="text-sm font-bold text-gray-800 mb-2 flex items-center gap-2">
             <Send className="w-4 h-4 text-green-600" />
-            اختيار المستلم
+            الهاتف المعتمد للإرسال
           </h3>
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              onClick={() => setRecipientType('student')}
-              className={`px-4 py-3 rounded-lg font-bold transition-all shadow-sm ${
-                recipientType === 'student'
-                  ? 'bg-green-600 text-white ring-2 ring-green-500'
-                  : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300'
-              }`}
-            >
-              📱 رقم التلميذ
-            </button>
-            <button
-              onClick={() => setRecipientType('guardian')}
-              className={`px-4 py-3 rounded-lg font-bold transition-all shadow-sm ${
-                recipientType === 'guardian'
-                  ? 'bg-green-600 text-white ring-2 ring-green-500'
-                  : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300'
-              }`}
-            >
-              👨‍👩‍👦 رقم ولي الأمر
-            </button>
-          </div>
-          <p className="text-xs text-gray-600 mt-3">
-            {recipientType === 'student' 
-              ? '📲 سيتم إرسال الكود السري إلى رقم التلميذ' 
-              : '📲 سيتم إرسال الكود السري إلى رقم ولي الأمر'}
+          <p className="text-sm text-gray-700">
+            يتم الإرسال تلقائيًا إلى <span className="font-bold text-green-700">رقم الهاتف المعتمد</span> الموجود في حقل
+            <span className="font-mono mx-1">students.phone</span>
+            كما هو مضبوط في صفحة <span className="font-bold">إدارة أرقام الهواتف</span>.
           </p>
         </div>
 
@@ -379,7 +523,6 @@ const CredentialsManagement: React.FC = () => {
         <div className="bg-white rounded-xl p-6 shadow-sm mb-6 border border-gray-100">
           <div className="flex flex-col lg:flex-row gap-4 items-center justify-between">
             <div className="flex flex-col sm:flex-row gap-4 w-full lg:w-auto">
-              {/* البحث */}
               <div className="relative">
                 <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
                 <input
@@ -390,8 +533,7 @@ const CredentialsManagement: React.FC = () => {
                   className="pr-10 pl-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent w-full sm:w-64"
                 />
               </div>
-              
-              {/* تصفية الصف */}
+
               <select
                 value={gradeFilter}
                 onChange={(e) => setGradeFilter(e.target.value)}
@@ -402,8 +544,7 @@ const CredentialsManagement: React.FC = () => {
                   <option key={grade} value={grade}>{grade}</option>
                 ))}
               </select>
-              
-              {/* تصفية القسم */}
+
               <select
                 value={sectionFilter}
                 onChange={(e) => setSectionFilter(e.target.value)}
@@ -415,8 +556,7 @@ const CredentialsManagement: React.FC = () => {
                 ))}
               </select>
             </div>
-            
-            {/* أزرار الإجراءات */}
+
             <div className="flex gap-2">
               <button
                 onClick={() => setShowCodes(!showCodes)}
@@ -430,6 +570,7 @@ const CredentialsManagement: React.FC = () => {
                 {showCodes ? 'إخفاء الأكواد' : 'إظهار الأكواد'}
               </button>
             </div>
+            
           </div>
         </div>
 
@@ -442,7 +583,10 @@ const CredentialsManagement: React.FC = () => {
             </div>
             <p className="text-2xl font-bold text-purple-600">{credentials.length}</p>
           </div>
-          
+
+
+
+
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
             <div className="flex items-center gap-3 mb-2">
               <Search className="w-5 h-5 text-blue-600" />
@@ -450,14 +594,14 @@ const CredentialsManagement: React.FC = () => {
             </div>
             <p className="text-2xl font-bold text-blue-600">{filteredCredentials.length}</p>
           </div>
-          
+
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
             <div className="flex items-center gap-3 mb-2">
               <span className="text-sm font-medium text-gray-700">الصفوف المختلفة</span>
             </div>
             <p className="text-2xl font-bold text-green-600">{getUniqueGrades().length}</p>
           </div>
-          
+
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
             <div className="flex items-center gap-3 mb-2">
               <span className="text-sm font-medium text-gray-700">الأقسام المختلفة</span>
@@ -465,6 +609,9 @@ const CredentialsManagement: React.FC = () => {
             <p className="text-2xl font-bold text-orange-600">{getUniqueSections().length}</p>
           </div>
         </div>
+
+ 
+
 
         {/* جدول الأكواد السرية */}
         <div className="bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
@@ -491,7 +638,7 @@ const CredentialsManagement: React.FC = () => {
                     الكود السري
                   </th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    أرقام الهاتف
+                    الهاتف المعتمد
                   </th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                     الإجراءات
@@ -537,7 +684,7 @@ const CredentialsManagement: React.FC = () => {
                             type="text"
                             value={tempPhone}
                             onChange={(e) => setTempPhone(e.target.value)}
-                            className="w-32 px-2 py-1 text-sm border border-blue-500 rounded focus:ring-2 focus:ring-blue-500"
+                            className="w-40 px-2 py-1 text-sm border border-blue-500 rounded focus:ring-2 focus:ring-blue-500"
                             placeholder="0612345678"
                             autoFocus
                           />
@@ -557,62 +704,39 @@ const CredentialsManagement: React.FC = () => {
                           </button>
                         </div>
                       ) : (
-                        <div className="space-y-1">
-                          {/* رقم التلميذ */}
-                          <div
-                            className="flex items-center gap-2 cursor-pointer hover:bg-blue-50 px-2 py-1 rounded transition-colors"
-                            onClick={() => {
-                              setEditingPhone({ studentId: credential.student_id, phone: credential.studentPhone || '' });
-                              setTempPhone(credential.studentPhone || '');
-                            }}
-                            title="اضغط للتعديل - رقم التلميذ"
-                          >
-                            <span className="text-xs text-gray-500">📱</span>
-                            {credential.studentPhone ? (
-                              <span className="text-blue-600 font-medium text-sm">{credential.studentPhone}</span>
-                            ) : (
-                              <span className="text-red-600 font-medium text-xs">لا يوجد</span>
-                            )}
-                            <Edit className="w-3 h-3 text-gray-400" />
-                          </div>
-                          
-                          {/* رقم ولي الأمر */}
-                          <div
-                            className="flex items-center gap-2 cursor-pointer hover:bg-green-50 px-2 py-1 rounded transition-colors"
-                            onClick={() => {
-                              setEditingPhone({ studentId: credential.student_id, phone: credential.guardianPhone || '' });
-                              setTempPhone(credential.guardianPhone || '');
-                            }}
-                            title="اضغط للتعديل - رقم ولي الأمر"
-                          >
-                            <span className="text-xs text-gray-500">👨‍👩‍👦</span>
-                            {credential.guardianPhone ? (
-                              <span className="text-green-600 font-medium text-sm">{credential.guardianPhone}</span>
-                            ) : (
-                              <span className="text-red-600 font-medium text-xs">لا يوجد</span>
-                            )}
-                            <Edit className="w-3 h-3 text-gray-400" />
-                          </div>
+                        <div
+                          className="flex items-center gap-2 cursor-pointer hover:bg-green-50 px-2 py-1 rounded transition-colors"
+                          onClick={() => {
+                            setEditingPhone({
+                              studentId: credential.student_id,
+                              phone: credential.managedPhone || ''
+                            });
+                            setTempPhone(credential.managedPhone || '');
+                          }}
+                          title="اضغط لتعديل الهاتف المعتمد"
+                        >
+                          <span className="text-xs text-gray-500">📱</span>
+                          {String(credential.managedPhone || "").trim() ? (
+  <span className="text-green-600 font-medium text-sm dir-ltr inline-block">
+    {String(credential.managedPhone || "").trim()}
+  </span>
+) : (
+  <span className="text-red-600 font-medium text-xs">لا يوجد</span>
+)}
+                          <Edit className="w-3 h-3 text-gray-400" />
                         </div>
                       )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => handleSendToWhatsApp(credential)}
-                          disabled={
-                            sendingTo === credential.student_id || 
-                            (recipientType === 'student' ? !credential.studentPhone : !credential.guardianPhone)
-                          }
-                          className="text-green-600 hover:text-green-900 p-1 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                          title={
-                            recipientType === 'student' 
-                              ? (credential.studentPhone ? 'إرسال إلى رقم التلميذ' : 'رقم التلميذ غير متوفر')
-                              : (credential.guardianPhone ? 'إرسال إلى رقم ولي الأمر' : 'رقم ولي الأمر غير متوفر')
-                          }
-                        >
-                          <Send className="w-4 h-4" />
-                        </button>
+  onClick={() => handleSendToWhatsApp(credential)}
+  disabled={sendingTo === credential.student_id || !String(credential.managedPhone || "").trim()}
+  className="text-green-600 hover:text-green-900 p-1 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+  title={String(credential.managedPhone || "").trim() ? 'إرسال إلى الهاتف المعتمد' : 'الهاتف المعتمد غير متوفر'}
+>
+  <Send className="w-4 h-4" />
+</button>
                         <button
                           onClick={() => {
                             setSelectedCredential(credential);
@@ -640,7 +764,7 @@ const CredentialsManagement: React.FC = () => {
               </tbody>
             </table>
           </div>
-          
+
           {filteredCredentials.length === 0 && (
             <div className="text-center py-12">
               <Key className="w-12 h-12 text-gray-400 mx-auto mb-4" />
@@ -675,7 +799,6 @@ const CredentialsManagement: React.FC = () => {
             </div>
 
             <div className="p-6 space-y-4">
-              {/* اختيار التلميذ */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   التلميذ *
@@ -695,7 +818,6 @@ const CredentialsManagement: React.FC = () => {
                 </select>
               </div>
 
-              {/* الكود السري */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   الكود السري *
@@ -718,7 +840,6 @@ const CredentialsManagement: React.FC = () => {
                 </div>
               </div>
 
-              {/* تاريخ الإصدار */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   تاريخ الإصدار *
@@ -731,7 +852,6 @@ const CredentialsManagement: React.FC = () => {
                 />
               </div>
 
-              {/* أزرار التحكم */}
               <div className="flex gap-4 pt-4">
                 <button
                   onClick={handleSaveCredential}

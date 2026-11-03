@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Key, Shield, CheckCircle, AlertCircle, Loader, Sparkles, Clock } from 'lucide-react';
+import { Key, Shield, CheckCircle, AlertCircle, Loader, } from 'lucide-react';
 import { licenseManager } from '../utils/licenseManager';
-import { trialManager } from '../utils/trialManager';
+//import { trialManager } from '../utils/trialManager';
 
 interface LicenseActivationProps {
   onActivationSuccess: () => void;
@@ -10,7 +10,7 @@ interface LicenseActivationProps {
 export const LicenseActivation: React.FC<LicenseActivationProps> = ({ onActivationSuccess }) => {
   const [licenseKey, setLicenseKey] = useState('');
   const [loading, setLoading] = useState(false);
-  const [trialLoading, setTrialLoading] = useState(false);
+ 
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
   const handleActivate = async (e: React.FormEvent) => {
@@ -49,28 +49,7 @@ export const LicenseActivation: React.FC<LicenseActivationProps> = ({ onActivati
     setMessage({ type: 'info', text: 'تم إدراج كود تجريبي غير محدود (للمطور). اضغط "تفعيل البرنامج" للمتابعة.' });
   };
 
-  const handleStartTrial = async () => {
-    setTrialLoading(true);
-    setMessage(null);
-
-    try {
-      const result = await trialManager.startTrialSession();
-
-      if (result.success) {
-        setMessage({ type: 'success', text: result.message });
-        setTimeout(() => {
-          onActivationSuccess();
-        }, 1500);
-      } else {
-        setMessage({ type: 'error', text: result.message });
-      }
-    } catch (error) {
-      console.error('خطأ في بدء التجربة:', error);
-      setMessage({ type: 'error', text: 'حدث خطأ أثناء بدء التجربة. يرجى المحاولة مرة أخرى.' });
-    } finally {
-      setTrialLoading(false);
-    }
-  };
+ 
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 via-indigo-900 to-purple-900 flex items-center justify-center p-4">
@@ -145,33 +124,7 @@ export const LicenseActivation: React.FC<LicenseActivationProps> = ({ onActivati
               )}
             </button>
 
-            <div className="relative my-6">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t-2 border-gray-300"></div>
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-4 bg-white text-gray-600 font-bold">أو</span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleStartTrial}
-              disabled={trialLoading || loading}
-              className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 px-6 rounded-lg font-bold text-lg flex items-center justify-center gap-3 hover:from-green-600 hover:to-emerald-700 transition-all shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed mb-3"
-            >
-              {trialLoading ? (
-                <>
-                  <Loader className="w-6 h-6 animate-spin" />
-                  جاري البدء...
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-6 h-6" />
-                  ابدأ التجربة المجانية - 7 أيام
-                </>
-              )}
-            </button>
+             
 
           
           </form>
@@ -181,19 +134,9 @@ export const LicenseActivation: React.FC<LicenseActivationProps> = ({ onActivati
             <h3 className="text-sm font-bold text-gray-700 mb-3">ملاحظات هامة:</h3>
             <ul className="space-y-2 text-xs text-gray-600">
               <li className="flex items-start gap-2">
-                <Clock className="w-4 h-4 text-green-600 flex-shrink-0 mt-0.5" />
-                <span className="font-medium text-green-700">التجربة المجانية: استخدم البرنامج بالكامل لمدة 7 أيام بدون قيود</span>
-              </li>
-              
-              <li className="flex items-start gap-2">
-                <span className="text-indigo-600 font-bold">•</span>
-                <span>جميع بياناتك محفوظة بشكل آمن على جهازك</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-indigo-600 font-bold">•</span>
-                <span>للحصول على كود دائم، تواصل مع الدعم بعد انتهاء التجربة</span>
-              </li>
-              
+               
+                  </li>
+       
             </ul>
           </div>
         </div>

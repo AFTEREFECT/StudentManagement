@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 /* إصلاح مشكلة تقطيع الصفحة */
-html, body {
+html,
+body {
   overflow-x: hidden;
 }
 
@@ -14,7 +15,6 @@ html, body {
 
 /* تحسينات للهواتف الذكية */
 @media (max-width: 768px) {
-  /* تحسين الشريط الجانبي للهواتف */
   .sidebar-mobile {
     position: fixed;
     top: 0;
@@ -25,49 +25,43 @@ html, body {
     transition: right 0.3s ease-in-out;
     overflow-y: auto;
   }
-  
+
   .sidebar-mobile.open {
     right: 0;
   }
-  
-  /* تحسين الجداول للهواتف */
+
   .table-mobile {
     font-size: 0.875rem;
   }
-  
+
   .table-mobile th,
   .table-mobile td {
     padding: 0.75rem 0.5rem;
   }
-  
-  /* تحسين النماذج للهواتف */
+
   .form-mobile input,
   .form-mobile select,
   .form-mobile textarea {
-    font-size: 16px; /* منع التكبير التلقائي في iOS */
+    font-size: 16px;
   }
-  
-  /* تحسين الأزرار للهواتف */
+
   .btn-mobile {
-    min-height: 44px; /* الحد الأدنى لحجم اللمس */
+    min-height: 44px;
     padding: 1rem 1.5rem;
     font-size: 1rem;
   }
-  
-  /* تحسين النصوص للهواتف */
+
   .text-mobile {
     font-size: 1rem !important;
     line-height: 1.5;
   }
-  
-  /* تحسين القائمة الجانبية للهواتف */
+
   .sidebar-mobile-item {
     padding: 1rem 1.5rem;
     font-size: 1.1rem;
     min-height: 50px;
   }
-  
-  /* تحسين العناوين للهواتف */
+
   .heading-mobile {
     font-size: 1.5rem !important;
     line-height: 1.3;
@@ -83,72 +77,186 @@ html, body {
 
 /* تحسين الخطوط العربية */
 .arabic-text {
-  font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-family: "Cairo", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* تحسين الطباعة */
+/* ========== Print Voucher Layout ========== */
+@page {
+  size: A4 portrait;
+  margin: 5mm;
+}
+
+@media screen {
+  .print-only {
+    display: none !important;
+  }
+}
+
 @media print {
-  /* منع تقطيع الجداول والصفوف */
+  html,
+  body {
+    width: 210mm;
+    height: 297mm;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    background: #fff !important;
+    font-family: "Cairo", Arial, sans-serif;
+    direction: rtl;
+    color: #000 !important;
+  }
+ .no-print,
+.no-print * {
+  display: none !important;
+}
+
+.print-only {
+  display: block !important;
+}
+
+  .print-only {
+    display: block !important;
+    position: absolute;
+    inset: 0;
+    width: 210mm;
+    min-height: 297mm;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+
+  .no-print,
+  .print-hidden,
+  aside,
+  nav,
+  header,
+  footer {
+    display: none !important;
+  }
+
   table {
     page-break-inside: avoid !important;
     border-collapse: collapse !important;
   }
-  
+
   tr {
     page-break-inside: avoid !important;
     page-break-after: auto !important;
   }
-  
+
   thead {
     display: table-header-group !important;
   }
-  
+
   tfoot {
     display: table-footer-group !important;
   }
-  
-  .no-break {
-    page-break-inside: avoid !important;
-  }
-  
+
+  .no-break,
   .page-container {
     page-break-inside: avoid !important;
   }
-  
-  /* ضمان الألوان السوداء في الطباعة */
+
   * {
-    color: #000 !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
+    box-shadow: none !important;
   }
-  
-  table th {
-    background: #000 !important;
-    color: white !important;
-    border: 2px solid #000 !important;
-  }
-  
-  table td {
-    border: 2px solid #000 !important;
-    color: #000 !important;
-  }
-  
-  .print-hidden {
-    display: none !important;
-  }
-  
+
   .print-visible {
     display: block !important;
   }
-  
-  body {
-    font-family: 'Cairo', Arial, sans-serif;
-    direction: rtl;
-    color: #000 !important;
+
+  .a4-page {
+    width: 210mm;
+    height: 297mm;
+    padding: 5mm;
+    box-sizing: border-box;
+    page-break-after: always;
+    overflow: hidden;
+    background: #fff;
   }
+
+   .cards-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, 1fr) !important; /* 2 أعمدة */
+  grid-template-rows: repeat(4, 1fr) !important;   /* 4 صفوف = 8 بطاقات */
+  gap: 5mm !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+ .voucher-card {
+  width: 100% !important;
+  height: 100% !important;
+  border: 1px solid #000 !important;
+  border-radius: 10px !important;
+  padding: 4mm !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+}
+
+  .card-header {
+    text-align: center !important;
+    font-size: 14px !important;
+    font-weight: 700 !important;
+    margin-bottom: 2mm !important;
+  }
+
+  .card-body {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 2mm !important;
+    width: 100% !important;
+    height: 100% !important;
+    text-align: center !important;
+  }
+
+  .student-name {
+    font-size: 13px !important;
+    font-weight: 700 !important;
+    line-height: 1.4 !important;
+    text-align: center !important;
+  }
+
+  .student-section,
+  .student-massar {
+    font-size: 11px !important;
+    line-height: 1.3 !important;
+    text-align: center !important;
+  }
+
+  .voucher-box {
+    width: 100% !important;
+    border: 1px dashed #000 !important;
+    border-radius: 8px !important;
+    padding: 2mm !important;
+    font-size: 15px !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    margin: 2mm 0 !important;
+    word-break: break-word !important;
+  }
+
+  .qr-box {
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    margin-top: 1mm !important;
+  }
+
+  .qr-box svg {
+    width: 70px !important;
+    height: 70px !important;
+  }
+}
 
 /* ========== Custom Animations ========== */
 @keyframes fadeIn {
@@ -156,6 +264,7 @@ html, body {
     opacity: 0;
     transform: translateY(-10px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -164,8 +273,4 @@ html, body {
 
 .animate-fadeIn {
   animation: fadeIn 0.3s ease-out;
-}
-
- 
-
 }

@@ -1,10 +1,361 @@
 import React, { useState, useEffect } from 'react';
 import { FileSpreadsheet, Calendar, Download, AlertCircle, Users, CheckCircle, Filter, Layers } from 'lucide-react';
 import ExcelJS from 'exceljs';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 import { dbManager } from '../utils/database';
 
 type SheetType = 'daily' | 'semi-weekly-1' | 'semi-weekly-2' | 'weekly';
 type SelectionMode = 'single' | 'multiple' | 'all-by-level';
+type ExportFormat = 'excel' | 'pdf' | 'both' | 'print';
+type ExcelGrouping = 'separate' | 'combined';
+type PeriodCount = 4 | 5;
+
+const cellValueToText = (value: unknown): string => {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (value instanceof Date) return value.toLocaleDateString();
+  if (typeof value !== 'object') return '';
+  if ('richText' in value && Array.isArray(value.richText)) {
+    return value.richText
+      .map((part) => part && typeof part === 'object' && 'text' in part && typeof part.text === 'string' ? part.text : '')
+      .join('');
+  }
+  if ('text' in value && typeof value.text === 'string') return value.text;
+  if ('result' in value) return cellValueToText(value.result);
+  if ('error' in value && typeof value.error === 'string') return value.error;
+  return '';
+};
+
+const makeUniqueWorksheetName = (section: string, existingNames: Set<string>) => {
+  const baseName = section.replace(/[\\/?*[\]:]/g, '-').replace(/^'+|'+$/g, '').slice(0, 31) || 'قسم';
+  let name = baseName;
+  let suffix = 2;
+  while (existingNames.has(name.toLowerCase())) {
+    const suffixText = ` (${suffix})`;
+    name = `${baseName.slice(0, 31 - suffixText.length)}${suffixText}`;
+    suffix++;
+  }
+  existingNames.add(name.toLowerCase());
+  return name;
+};
+
+const addWorksheetCopy = (
+  source: ExcelJS.Worksheet,
+  target: ExcelJS.Worksheet,
+  name: string
+) => {
+  target.model.merges.forEach((range) => target.unMergeCells(range));
+  const model = structuredClone(source.model) as ExcelJS.WorksheetModel & { mergeCells: string[] };
+  model.id = target.id;
+  model.name = name;
+  model.mergeCells = model.merges;
+  target.model = model;
+  target.name = name;
+};
+
+const excelColumnNumber = (letters: string): number =>
+  letters.split('').reduce((column, letter) => column * 26 + letter.charCodeAt(0) - 64, 0);
+
+const renderWorksheetForPrint = async (worksheet: ExcelJS.Worksheet) => {
+  const printArea = worksheet.pageSetup.printArea || 'A1:BK50';
+  const rangeMatch = printArea.match(/^\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)$/);
+  if (!rangeMatch) {
+    throw new Error('تعذر تحديد مساحة الطباعة في قالب ورقة الغياب.');
+  }
+
+  const [, startColumnLetters, startRowText, endColumnLetters, endRowText] = rangeMatch;
+  const startColumn = excelColumnNumber(startColumnLetters);
+  const startRow = Number(startRowText);
+  const endColumn = excelColumnNumber(endColumnLetters);
+  const endRow = Number(endRowText);
+  const columnWidths = Array.from(
+    { length: endColumn - startColumn + 1 },
+    (_, index) => worksheet.getColumn(startColumn + index).width || 8.43
+  );
+  const totalColumnWidth = columnWidths.reduce((total, width) => total + width, 0);
+  const mergeRanges = worksheet.model.merges.map((range) => {
+    const [topLeft, bottomRight] = range.split(':');
+    const parseAddress = (address: string) => {
+      const match = address.match(/^([A-Z]+)(\d+)$/);
+      if (!match) throw new Error(`عنوان خلية غير صالح في القالب: ${address}`);
+      return { column: excelColumnNumber(match[1]), row: Number(match[2]) };
+    };
+    return { start: parseAddress(topLeft), end: parseAddress(bottomRight) };
+  });
+  const container = document.createElement('div');
+  container.dir = 'rtl';
+  container.style.cssText = 'position:fixed;left:-10000px;top:0;width:1800px;background:#fff;color:#000;font-family:Arial,Tahoma,sans-serif;';
+
+  const table = document.createElement('table');
+  table.dir = 'rtl';
+  table.style.cssText = 'width:1800px;table-layout:fixed;border-collapse:collapse;background:#fff;color:#000;';
+  const columnGroup = document.createElement('colgroup');
+  columnWidths.forEach((width) => {
+    const column = document.createElement('col');
+    column.style.width = `${(width / totalColumnWidth) * 100}%`;
+    columnGroup.appendChild(column);
+  });
+  table.appendChild(columnGroup);
+
+  const colorToCss = (color?: Partial<ExcelJS.Color>) => {
+    if (color?.argb) return `#${color.argb.slice(-6)}`;
+    if (color?.theme === 0) return '#ffffff';
+    if (color?.theme === 1) return '#000000';
+    if (color?.theme === 9) return '#d9eaf7';
+    return undefined;
+  };
+  const columnLetters = (column: number) => {
+    let remaining = column;
+    let letters = '';
+    while (remaining > 0) {
+      const remainder = (remaining - 1) % 26;
+      letters = String.fromCharCode(65 + remainder) + letters;
+      remaining = Math.floor((remaining - 1) / 26);
+    }
+    return letters;
+  };
+  const addressOf = (column: number, row: number) => `${columnLetters(column)}${row}`;
+  const borderStyle = (style?: string) => {
+    if (style === 'double') return 'double';
+    if (style === 'dotted' || style === 'hair') return 'dotted';
+    if (style === 'dashed' || style === 'dashDot' || style === 'dashDotDot') return 'dashed';
+    if (style === 'medium' || style === 'thick') return 'solid';
+    return 'solid';
+  };
+  const borderWidth = (style?: string) => {
+    if (style === 'thick') return '2px';
+    if (style === 'medium') return '1.5px';
+    if (style === 'hair') return '0.5px';
+    return '1px';
+  };
+
+  for (let rowNumber = startRow; rowNumber <= endRow; rowNumber++) {
+    const row = document.createElement('tr');
+    const rowHeight = worksheet.getRow(rowNumber).height;
+    if (rowHeight) row.style.height = `${(rowHeight * 96) / 72}px`;
+
+    for (let columnNumber = startColumn; columnNumber <= endColumn; columnNumber++) {
+      const merge = mergeRanges.find(({ start, end }) =>
+        rowNumber >= start.row && rowNumber <= end.row &&
+        columnNumber >= start.column && columnNumber <= end.column
+      );
+      if (merge && (rowNumber !== merge.start.row || columnNumber !== merge.start.column)) continue;
+
+      const cell = worksheet.getCell(addressOf(columnNumber, rowNumber));
+      const tableCell = document.createElement('td');
+      if (merge) {
+        tableCell.rowSpan = merge.end.row - merge.start.row + 1;
+        tableCell.colSpan = merge.end.column - merge.start.column + 1;
+      }
+
+      const style = cell.style;
+      const font = style.font;
+      const alignment = style.alignment;
+      const fill = style.fill && 'fgColor' in style.fill ? colorToCss(style.fill.fgColor) : undefined;
+      tableCell.style.cssText = [
+        'overflow:hidden',
+        'padding:1px 2px',
+        'vertical-align:middle',
+        'text-align:center',
+        'white-space:pre-wrap',
+        `font-size:${font?.size || 10}pt`,
+        `font-weight:${font?.bold ? 'bold' : 'normal'}`,
+        `font-style:${font?.italic ? 'italic' : 'normal'}`,
+        `background-color:${fill || '#ffffff'}`,
+        `color:${colorToCss(font?.color) || '#000000'}`,
+        `text-align:${alignment?.horizontal || 'center'}`,
+        `vertical-align:${alignment?.vertical === 'top' ? 'top' : alignment?.vertical === 'bottom' ? 'bottom' : 'middle'}`,
+        `white-space:${alignment?.wrapText ? 'pre-wrap' : 'nowrap'}`
+      ].join(';');
+
+      const borders = style.border;
+      (['top', 'right', 'bottom', 'left'] as const).forEach((side) => {
+        const border = borders?.[side];
+        if (!border?.style) return;
+        const color = colorToCss(border.color) || '#000000';
+        tableCell.style.setProperty(
+          `border-${side}`,
+          `${borderWidth(border.style)} ${borderStyle(border.style)} ${color}`
+        );
+      });
+      tableCell.textContent = cellValueToText(cell.value);
+      row.appendChild(tableCell);
+    }
+
+    table.appendChild(row);
+  }
+
+  container.appendChild(table);
+  document.body.appendChild(container);
+  try {
+    const canvas = await html2canvas(container, {
+      backgroundColor: '#ffffff',
+      scale: 2,
+      logging: false
+    });
+    return canvas.toDataURL('image/png');
+  } finally {
+    container.remove();
+  }
+};
+
+const saveWorksheetAsPdf = (imageData: string, fileName: string) => {
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4', compress: true });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  pdf.addImage(imageData, 'PNG', 3, 3, pageWidth - 6, pageHeight - 6);
+  pdf.save(fileName);
+};
+
+const escapeHtml = (value: string) =>
+  value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[character] || character);
+
+const renderWorksheetAsPrintHtml = (worksheet: ExcelJS.Worksheet) => {
+  const printArea = worksheet.pageSetup.printArea || 'A1:BK50';
+  const rangeMatch = printArea.match(/^\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)$/);
+  if (!rangeMatch) {
+    throw new Error('تعذر تحديد مساحة الطباعة في قالب ورقة الغياب.');
+  }
+
+  const [, startColumnLetters, startRowText, endColumnLetters, endRowText] = rangeMatch;
+  const startColumn = excelColumnNumber(startColumnLetters);
+  const startRow = Number(startRowText);
+  const endColumn = excelColumnNumber(endColumnLetters);
+  const endRow = Number(endRowText);
+  const columnWidths = Array.from(
+    { length: endColumn - startColumn + 1 },
+    (_, index) => worksheet.getColumn(startColumn + index).width || 8.43
+  );
+  const totalColumnWidth = columnWidths.reduce((total, width) => total + width, 0);
+  const rowHeights = Array.from(
+    { length: endRow - startRow + 1 },
+    (_, index) => worksheet.getRow(startRow + index).height || 15
+  );
+  const totalRowHeight = rowHeights.reduce((total, height) => total + height, 0);
+  const mergeRanges = worksheet.model.merges.map((range) => {
+    const [topLeft, bottomRight] = range.split(':');
+    const parseAddress = (address: string) => {
+      const match = address.match(/^([A-Z]+)(\d+)$/);
+      if (!match) throw new Error(`عنوان خلية غير صالح في القالب: ${address}`);
+      return { column: excelColumnNumber(match[1]), row: Number(match[2]) };
+    };
+    return { start: parseAddress(topLeft), end: parseAddress(bottomRight) };
+  });
+  const columnLetters = (column: number) => {
+    let remaining = column;
+    let letters = '';
+    while (remaining > 0) {
+      const remainder = (remaining - 1) % 26;
+      letters = String.fromCharCode(65 + remainder) + letters;
+      remaining = Math.floor((remaining - 1) / 26);
+    }
+    return letters;
+  };
+  const colorToCss = (color?: Partial<ExcelJS.Color>) => {
+    if (color?.argb) return `#${color.argb.slice(-6)}`;
+    if (color?.theme === 0) return '#ffffff';
+    if (color?.theme === 1) return '#000000';
+    if (color?.theme === 9) return '#d9eaf7';
+    return undefined;
+  };
+  const borderStyle = (style?: string) => {
+    if (style === 'double') return 'double';
+    if (style === 'dotted' || style === 'hair') return 'dotted';
+    if (style === 'dashed' || style === 'dashDot' || style === 'dashDotDot') return 'dashed';
+    return 'solid';
+  };
+  const borderWidth = (style?: string) =>
+    style === 'thick' ? '2px' : style === 'medium' ? '1.5px' : style === 'hair' ? '0.5px' : '1px';
+  const columns = columnWidths
+    .map((width) => `<col style="width:${(width / totalColumnWidth) * 100}%">`)
+    .join('');
+  const rows: string[] = [];
+
+  for (let rowNumber = startRow; rowNumber <= endRow; rowNumber++) {
+    const rowHeight = rowHeights[rowNumber - startRow];
+    const cells: string[] = [];
+    for (let columnNumber = startColumn; columnNumber <= endColumn; columnNumber++) {
+      const merge = mergeRanges.find(({ start, end }) =>
+        rowNumber >= start.row && rowNumber <= end.row &&
+        columnNumber >= start.column && columnNumber <= end.column
+      );
+      if (merge && (rowNumber !== merge.start.row || columnNumber !== merge.start.column)) continue;
+
+      const address = `${columnLetters(columnNumber)}${rowNumber}`;
+      const cell = worksheet.getCell(address);
+      const { font, alignment } = cell.style;
+      const fill = cell.style.fill && 'fgColor' in cell.style.fill
+        ? colorToCss(cell.style.fill.fgColor)
+        : undefined;
+      const styles = [
+        'box-sizing:border-box',
+        'overflow:hidden',
+        'padding:0 1px',
+        'text-align:center',
+        `font-family:'${(font?.name || 'Arial').replace(/['\\]/g, '')}',Arial,sans-serif`,
+        `font-size:${Math.max(4, (font?.size || 10) * 0.48)}pt`,
+        `font-weight:${font?.bold ? 'bold' : 'normal'}`,
+        `font-style:${font?.italic ? 'italic' : 'normal'}`,
+        `color:${colorToCss(font?.color) || '#000000'}`,
+        `background-color:${fill || '#ffffff'}`,
+        `text-align:${alignment?.horizontal || 'center'}`,
+        `vertical-align:${alignment?.vertical === 'top' ? 'top' : alignment?.vertical === 'bottom' ? 'bottom' : 'middle'}`,
+        `white-space:${alignment?.wrapText ? 'pre-wrap' : 'nowrap'}`
+      ];
+      (['top', 'right', 'bottom', 'left'] as const).forEach((side) => {
+        const border = cell.style.border?.[side];
+        if (border?.style) {
+          styles.push(
+            `border-${side}:${borderWidth(border.style)} ${borderStyle(border.style)} ${colorToCss(border.color) || '#000000'}`
+          );
+        }
+      });
+
+      const spans = merge
+        ? ` rowspan="${merge.end.row - merge.start.row + 1}" colspan="${merge.end.column - merge.start.column + 1}"`
+        : '';
+      cells.push(`<td${spans} style="${escapeHtml(styles.join(';'))}">${escapeHtml(cellValueToText(cell.value))}</td>`);
+    }
+    rows.push(`<tr style="height:${(204 * rowHeight) / totalRowHeight}mm">${cells.join('')}</tr>`);
+  }
+
+  return `<section class="sheet"><table dir="rtl"><colgroup>${columns}</colgroup><tbody>${rows.join('')}</tbody></table></section>`;
+};
+
+const printAttendanceSheets = async (printWindow: Window, pages: string[]) => {
+  printWindow.document.open();
+  printWindow.document.write(`<!doctype html>
+    <html lang="ar" dir="rtl">
+      <head>
+        <meta charset="utf-8">
+        <title>أوراق الغياب</title>
+        <style>
+          @page { size: A4 landscape; margin: 3mm; }
+          html, body { margin: 0; padding: 0; font-family: Arial, Tahoma, sans-serif; }
+          .sheet { width: 291mm; height: 204mm; break-after: page; page-break-after: always; }
+          .sheet table { width: 100%; height: 100%; table-layout: fixed; border-collapse: collapse; }
+          .sheet tr { break-inside: avoid; page-break-inside: avoid; }
+          .sheet td { line-height: 1; }
+          .sheet:last-child { break-after: auto; page-break-after: auto; }
+        </style>
+      </head>
+      <body>${pages.join('')}</body>
+    </html>`);
+  printWindow.document.close();
+
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  printWindow.focus();
+  printWindow.print();
+};
 
 interface Student {
   id: string;
@@ -12,6 +363,7 @@ interface Student {
   lastName: string;
   section: string;
   level: string;
+  studentId?: string;
 }
 
 const AttendanceSheetGenerator: React.FC = () => {
@@ -24,7 +376,10 @@ const AttendanceSheetGenerator: React.FC = () => {
   const [filteredSections, setFilteredSections] = useState<string[]>([]);
 
   const [sheetType, setSheetType] = useState<SheetType>('weekly');
+  const [periodCount, setPeriodCount] = useState<PeriodCount>(4);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>('single');
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('excel');
+  const [excelGrouping, setExcelGrouping] = useState<ExcelGrouping>('separate');
 
   const [mondayDate, setMondayDate] = useState<string>('');
   const [calculatedDates, setCalculatedDates] = useState<any>(null);
@@ -249,14 +604,14 @@ console.log(settings)
   const getTemplateFileName = (type: SheetType): string => {
     switch (type) {
       case 'daily':
-        return '/Absence_daily.xlsx';
+        return './Absence_daily.xlsx';
       case 'semi-weekly-1':
-        return '/Absence_fatra1.xlsx';
+        return './Absence_fatra1.xlsx';
       case 'semi-weekly-2':
-        return '/Absence_fatra2.xlsx';
+        return './Absence_fatra2.xlsx';
       case 'weekly':
       default:
-        return '/feuilAbsence.xlsx';
+        return './feuilAbsence.xlsx';
     }
   };
 
@@ -283,6 +638,7 @@ console.log(settings)
     section: string,
     dates: any,
     type: SheetType,
+    periodCount: PeriodCount,
     settings?: any
   ) => {
     // ✅ استخدام الإعدادات الممررة أو الافتراضية
@@ -402,6 +758,129 @@ console.log(settings)
       throw new Error(`لا توجد بيانات تلاميذ للقسم: ${section}`);
     }
 
+    let footerRow: number | undefined;
+    for (let rowNumber = 5; rowNumber <= worksheet.rowCount && footerRow === undefined; rowNumber++) {
+      let hasStudentCountLabel = false;
+      worksheet.getRow(rowNumber).eachCell({ includeEmpty: false }, (cell) => {
+        const text = cellValueToText(cell.value);
+        if (text.includes('عدد المتغيبين') || text.includes('عدد التلاميذ')) {
+          hasStudentCountLabel = true;
+        }
+      });
+      if (hasStudentCountLabel) footerRow = rowNumber;
+    }
+
+    if (!footerRow) {
+      throw new Error('تعذر العثور على نهاية قائمة التلاميذ في قالب ورقة الغياب.');
+    }
+
+    if (periodCount === 5) {
+      let fifthPeriodSlots = 0;
+      worksheet.getRow(4).eachCell({ includeEmpty: false }, (cell) => {
+        if (cell.value !== 'H4') return;
+
+        const groupStartColumn = cell.col - 3;
+        for (let offset = 0; offset < 4; offset++) {
+          const header = worksheet.getRow(4).getCell(groupStartColumn + offset);
+          if (header.value !== `H${offset + 1}`) {
+            throw new Error('ترتيب الحصص غير صالح في قالب ورقة الغياب.');
+          }
+        }
+
+        const fifthPeriodCell = worksheet.getRow(4).getCell(cell.col + 1);
+        const existingValue = fifthPeriodCell.value;
+        if (
+          existingValue !== null &&
+          existingValue !== undefined &&
+          existingValue !== '' &&
+          existingValue !== 'H0' &&
+          existingValue !== 'H5'
+        ) {
+          throw new Error('تعذر تجهيز خانة الحصة الخامسة في قالب ورقة الغياب.');
+        }
+
+        let groupWidth = 0;
+        for (let column = groupStartColumn; column <= fifthPeriodCell.col; column++) {
+          groupWidth += worksheet.getColumn(column).width || 8.43;
+        }
+        const periodColumnWidth = groupWidth / 5;
+        for (let column = groupStartColumn; column <= fifthPeriodCell.col; column++) {
+          worksheet.getColumn(column).width = periodColumnWidth;
+        }
+
+        for (let rowNumber = 4; rowNumber < footerRow; rowNumber++) {
+          const sourceCell = worksheet.getRow(rowNumber).getCell(cell.col);
+          const targetCell = worksheet.getRow(rowNumber).getCell(fifthPeriodCell.col);
+          const targetBorder = structuredClone(targetCell.style.border);
+          targetCell.style = {
+            ...structuredClone(sourceCell.style),
+            border: targetBorder
+          };
+        }
+
+        fifthPeriodCell.value = 'H5';
+        fifthPeriodSlots++;
+      });
+
+      if (fifthPeriodSlots === 0) {
+        throw new Error('لم يتم العثور على أعمدة الحصص في قالب ورقة الغياب.');
+      }
+    }
+
+    const rosterStartRow = 5;
+    const availableRosterRows = footerRow - rosterStartRow;
+    const requiredRosterRows = studentsInSection.length + 1;
+    const rowDelta = requiredRosterRows - availableRosterRows;
+    const rosterHeight = Array.from(
+      { length: availableRosterRows },
+      (_, index) => worksheet.getRow(rosterStartRow + index).height || 22.2
+    ).reduce((total, height) => total + height, 0);
+    const originalPrintArea = worksheet.pageSetup.printArea || '';
+    const printAreaMatch = originalPrintArea.match(/^(\$?[A-Z]+\$?\d+):(\$?[A-Z]+\$?)(\d+)$/);
+    const mergeRanges = worksheet.model.merges.map((range) => {
+      const [topLeft, bottomRight] = range.split(':');
+      const parseAddress = (address: string) => {
+        const match = address.match(/^([A-Z]+)(\d+)$/);
+        if (!match) throw new Error(`عنوان دمج غير صالح في القالب: ${address}`);
+        return { column: match[1], row: Number(match[2]) };
+      };
+      return { range, start: parseAddress(topLeft), end: parseAddress(bottomRight) };
+    });
+    const changedRow = rowDelta < 0 ? rosterStartRow + requiredRosterRows : footerRow;
+    const affectedMerges = rowDelta === 0
+      ? []
+      : mergeRanges.filter(({ end }) => end.row >= changedRow);
+    affectedMerges.forEach(({ range }) => worksheet.unMergeCells(range));
+
+    if (rowDelta < 0) {
+      worksheet.spliceRows(rosterStartRow + requiredRosterRows, -rowDelta);
+    } else if (rowDelta > 0) {
+      worksheet.spliceRows(footerRow, 0, ...Array.from({ length: rowDelta }, () => []));
+      const styleSource = worksheet.getRow(footerRow - 1);
+      for (let rowNumber = footerRow; rowNumber < footerRow + rowDelta; rowNumber++) {
+        const insertedRow = worksheet.getRow(rowNumber);
+        insertedRow.height = styleSource.height;
+        for (let columnNumber = 2; columnNumber <= 63; columnNumber++) {
+          insertedRow.getCell(columnNumber).style = structuredClone(styleSource.getCell(columnNumber).style);
+        }
+      }
+    }
+
+    affectedMerges.forEach(({ start, end }) => {
+      const adjustedStartRow = start.row + rowDelta;
+      const adjustedEndRow = end.row + rowDelta;
+      worksheet.mergeCells(`${start.column}${adjustedStartRow}:${end.column}${adjustedEndRow}`);
+    });
+
+    if (printAreaMatch && rowDelta !== 0) {
+      worksheet.pageSetup.printArea = `${printAreaMatch[1]}:${printAreaMatch[2]}${Number(printAreaMatch[3]) + rowDelta}`;
+    }
+
+    const evenRowHeight = rosterHeight / requiredRosterRows;
+    for (let index = 0; index < requiredRosterRows; index++) {
+      worksheet.getRow(rosterStartRow + index).height = evenRowHeight;
+    }
+
     studentsInSection.forEach((student, index) => {
       const rowNumber = 5 + index;
 
@@ -437,6 +916,10 @@ console.log(settings)
       setCellValueSafely('B', serialNumber);
       setCellValueSafely('C', student.name);
     });
+
+    const reserveRow = rosterStartRow + studentsInSection.length;
+    worksheet.getCell(`B${reserveRow}`).value = studentsInSection.length + 1;
+    worksheet.getCell(`C${reserveRow}`).value = '';
   };
 
   const generateAttendanceSheet = async () => {
@@ -460,46 +943,58 @@ console.log(settings)
       return;
     }
 
+    let printWindow: Window | null = null;
+    const printPages: string[] = [];
+    if (exportFormat === 'print') {
+      printWindow = window.open('', '_blank');
+      if (!printWindow) {
+        setMessage({ type: 'error', text: 'تعذر فتح نافذة الطباعة. اسمح بالنوافذ المنبثقة لهذا الموقع ثم أعد المحاولة.' });
+        return;
+      }
+      printWindow.document.write('<!doctype html><html lang="ar"><head><meta charset="utf-8"><title>جاري تجهيز أوراق الغياب</title></head><body>جاري تجهيز أوراق الغياب للطباعة...</body></html>');
+      printWindow.document.close();
+    }
+
     setIsGenerating(true);
     setMessage({ type: 'info', text: 'جاري توليد ورقة/أوراق الغياب...' });
 
-    console.log('🚀 بدء توليد أوراق الغياب');
+    try {
+      console.log('🚀 بدء توليد أوراق الغياب');
 
-    // ✅ CRITICAL FIX: التحقق من institutionSettings وإعادة جلبها إذا لزم الأمر
-    console.log('🔍 التحقق من إعدادات المؤسسة...');
-    console.log('📊 قيمة institutionSettings الحالية:', institutionSettings);
+      // ✅ CRITICAL FIX: التحقق من institutionSettings وإعادة جلبها إذا لزم الأمر
+      console.log('🔍 التحقق من إعدادات المؤسسة...');
+      console.log('📊 قيمة institutionSettings الحالية:', institutionSettings);
 
-    let currentSettings = institutionSettings;
+      let currentSettings = institutionSettings;
 
-    if (!currentSettings || !currentSettings.name || !currentSettings.directorateName) {
-      console.warn('⚠️ institutionSettings فارغ أو ناقص! إعادة الجلب من قاعدة البيانات...');
+      if (!currentSettings || !currentSettings.name || !currentSettings.directorateName) {
+        console.warn('⚠️ institutionSettings فارغ أو ناقص! إعادة الجلب من قاعدة البيانات...');
 
-      const freshSettings = await dbManager.getInstitutionSettings();
+        const freshSettings = await dbManager.getInstitutionSettings();
 
-      if (!freshSettings) {
-        throw new Error('يجب حفظ إعدادات المؤسسة من صفحة "الإعدادات" أولاً!');
+        if (!freshSettings) {
+          throw new Error('يجب حفظ إعدادات المؤسسة من صفحة "الإعدادات" أولاً!');
+        }
+
+        currentSettings = {
+          name: freshSettings.institution || freshSettings.name || '',
+          directorateName: freshSettings.directorate || freshSettings.directorateName || '',
+          academicYear: freshSettings.academicYear || '2025/2026',
+          province: freshSettings.academy || '',
+          municipality: freshSettings.municipality || ''
+        };
+
+        setInstitutionSettings(currentSettings);
+        console.log('✅ تم إعادة تحميل الإعدادات:', currentSettings);
       }
 
-      currentSettings = {
-        name: freshSettings.institution || freshSettings.name || '',
-        directorateName: freshSettings.directorate || freshSettings.directorateName || '',
-        academicYear: freshSettings.academicYear || '2025/2026',
-        province: freshSettings.academy || '',
-        municipality: freshSettings.municipality || ''
-      };
+      console.log('\n✅ إعدادات المؤسسة المُستخدمة في التوليد:');
+      console.log('  ├─ اسم المؤسسة (D1):', currentSettings.name || '❌ فارغ');
+      console.log('  ├─ اسم المديرية (T1):', currentSettings.directorateName || '❌ فارغ');
+      console.log('  ├─ السنة الدراسية (BA2):', currentSettings.academicYear || '❌ فارغ');
+      console.log('  ├─ الأكاديمية:', currentSettings.province || '❌ فارغ');
+      console.log('  └─ الجماعة:', currentSettings.municipality || '❌ فارغ\n');
 
-      setInstitutionSettings(currentSettings);
-      console.log('✅ تم إعادة تحميل الإعدادات:', currentSettings);
-    }
-
-    console.log('\n✅ إعدادات المؤسسة المُستخدمة في التوليد:');
-    console.log('  ├─ اسم المؤسسة (D1):', currentSettings.name || '❌ فارغ');
-    console.log('  ├─ اسم المديرية (T1):', currentSettings.directorateName || '❌ فارغ');
-    console.log('  ├─ السنة الدراسية (BA2):', currentSettings.academicYear || '❌ فارغ');
-    console.log('  ├─ الأكاديمية:', currentSettings.province || '❌ فارغ');
-    console.log('  └─ الجماعة:', currentSettings.municipality || '❌ فارغ\n');
-
-    try {
       const templateFile = getTemplateFileName(sheetType);
       console.log('📂 ملف القالب:', templateFile);
       const response = await fetch(templateFile);
@@ -525,10 +1020,29 @@ console.log(settings)
         sectionsToProcess = filteredSections;
       }
 
+      if (sectionsToProcess.length === 0) {
+        throw new Error('لا توجد أقسام تحتوي على تلاميذ لتوليد أوراق الغياب.');
+      }
+
       const dates = calculateWeekDates(mondayDate);
       if (!dates) {
         throw new Error('خطأ في حساب التواريخ');
       }
+
+      const shouldCombineExcel =
+        (exportFormat === 'excel' || exportFormat === 'both') && excelGrouping === 'combined';
+      let combinedWorkbook: ExcelJS.Workbook | null = null;
+      if (shouldCombineExcel) {
+        combinedWorkbook = new ExcelJS.Workbook();
+        await combinedWorkbook.xlsx.load(arrayBuffer, {
+          ignoreNodes: ['dataValidations', 'conditionalFormatting']
+        });
+      }
+      const worksheetNames = new Set<string>();
+      let worksheetIndex = 0;
+      const sheetTypeName = sheetType === 'daily' ? 'يومية' :
+                           sheetType === 'semi-weekly-1' ? 'نصف_أسبوعية_فترة1' :
+                           sheetType === 'semi-weekly-2' ? 'نصف_أسبوعية_فترة2' : 'أسبوعية';
 
       for (const section of sectionsToProcess) {
         const workbook = new ExcelJS.Workbook();
@@ -543,36 +1057,78 @@ console.log(settings)
         }
 
         // ✅ تمرير currentSettings بشكل صريح لضمان استخدام البيانات الصحيحة
-        await fillWorksheetData(worksheet, section, dates, sheetType, currentSettings);
+        await fillWorksheetData(worksheet, section, dates, sheetType, periodCount, currentSettings);
 
-        const buffer = await workbook.xlsx.writeBuffer();
-        const blob = new Blob([buffer], {
-          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        });
+        const safeSectionName = section.replace(/[<>:"/\\|?*]/g, '-');
+        const periodSuffix = periodCount === 5 ? '_H1-H5' : '';
+        const fileBaseName = `ورقة_الغياب_${sheetTypeName}_${safeSectionName}_${mondayDate.replace(/\//g, '-')}${periodSuffix}`;
 
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
+        if (combinedWorkbook) {
+          const worksheetName = makeUniqueWorksheetName(section, worksheetNames);
+          const targetWorksheet = worksheetIndex === 0
+            ? combinedWorkbook.worksheets[0]
+            : combinedWorkbook.addWorksheet(worksheetName);
+          if (!targetWorksheet) {
+            throw new Error('تعذر تجهيز ورقة القسم في ملف Excel الموحّد.');
+          }
+          addWorksheetCopy(worksheet, targetWorksheet, worksheetName);
+          worksheetIndex++;
+        } else if (exportFormat === 'excel' || exportFormat === 'both') {
+          const buffer = await workbook.xlsx.writeBuffer();
+          const blob = new Blob([buffer], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          });
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${fileBaseName}.xlsx`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          window.URL.revokeObjectURL(url);
+        }
 
-        const sheetTypeName = sheetType === 'daily' ? 'يومية' :
-                             sheetType === 'semi-weekly-1' ? 'نصف_أسبوعية_فترة1' :
-                             sheetType === 'semi-weekly-2' ? 'نصف_أسبوعية_فترة2' : 'أسبوعية';
-
-        link.download = `ورقة_الغياب_${sheetTypeName}_${section}_${mondayDate.replace(/\//g, '-')}.xlsx`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
+        if (exportFormat !== 'excel') {
+          if (exportFormat === 'print') {
+            printPages.push(renderWorksheetAsPrintHtml(worksheet));
+          } else {
+            const image = await renderWorksheetForPrint(worksheet);
+            saveWorksheetAsPdf(image, `${fileBaseName}.pdf`);
+          }
+        }
 
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
+      if (combinedWorkbook) {
+        const buffer = await combinedWorkbook.xlsx.writeBuffer();
+        const blob = new Blob([buffer], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const periodSuffix = periodCount === 5 ? '_H1-H5' : '';
+        link.download = `أوراق_الغياب_${sheetTypeName}_${mondayDate.replace(/\//g, '-')}${periodSuffix}.xlsx`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+      }
+
+      if (printWindow && printPages.length > 0) {
+        await printAttendanceSheets(printWindow, printPages);
+      }
+
       setMessage({
         type: 'success',
-        text: `تم توليد ${sectionsToProcess.length} ورقة غياب بنجاح!`
+        text: exportFormat === 'print'
+          ? `تم تجهيز ${sectionsToProcess.length} ورقة غياب وفتح نافذة الطباعة.`
+          : `تم توليد ${sectionsToProcess.length} ورقة غياب بنجاح (${combinedWorkbook ? 'ملف Excel واحد بأوراق متعددة' : exportFormat === 'excel' ? 'Excel' : exportFormat === 'pdf' ? 'PDF' : 'Excel وPDF'}).`
       });
     } catch (error: any) {
       console.error('خطأ في توليد ورقة الغياب:', error);
+      if (printWindow && !printWindow.closed) printWindow.close();
       setMessage({
         type: 'error',
         text: error.message || 'حدث خطأ غير متوقع'
@@ -605,6 +1161,10 @@ console.log(settings)
            
               <li>الفترة الأولى: الإثنين-الأربعاء | الفترة الثانية: الخميس-السبت</li>
                <li>يمكنك فلترة الأقسام حسب المستوى في جميع أوضاع الاختيار</li>
+              <li>تُحذف صفوف الأسماء الفارغة وتُضاف خانة واحدة احتياطية، مع الحفاظ على التوقيعات</li>
+              <li>يمكن اختيار 4 حصص كما في النموذج الحالي أو 5 حصص من H1 إلى H5</li>
+              <li>يمكن اختيار Excel أو PDF أو تنزيل الصيغتين معاً، أو فتح الطباعة المباشرة</li>
+              <li>الطباعة المباشرة تفتح نافذة الطباعة؛ اختر الطابعة أو الحفظ PDF من النافذة</li>
             </ul>
           </div>
         </div>
@@ -662,6 +1222,20 @@ console.log(settings)
               <option value="all-by-level">كل أقسام مستوى معين</option>
             </select>
           </div>
+        </div>
+
+        <div>
+          <label className="block text-gray-700 font-bold mb-2">
+            عدد الحصص في كل فترة
+          </label>
+          <select
+            value={periodCount}
+            onChange={(event) => setPeriodCount(event.target.value === '5' ? 5 : 4)}
+            className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            <option value={4}>4 حصص (H1-H4) - النموذج الحالي</option>
+            <option value={5}>5 حصص (H1-H5)</option>
+          </select>
         </div>
 
         {selectionMode === 'all-by-level' && (
@@ -850,6 +1424,38 @@ console.log(settings)
           />
         </div>
 
+        <div>
+          <label className="block text-gray-700 font-bold mb-2">
+            طريقة الإخراج
+          </label>
+          <select
+            value={exportFormat}
+            onChange={(event) => setExportFormat(event.target.value as ExportFormat)}
+            className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          >
+            <option value="excel">Excel فقط</option>
+            <option value="pdf">PDF فقط</option>
+            <option value="both">Excel وPDF</option>
+            <option value="print">طباعة مباشرة</option>
+          </select>
+        </div>
+
+        {(exportFormat === 'excel' || exportFormat === 'both') && (
+          <div>
+            <label className="block text-gray-700 font-bold mb-2">
+              طريقة جمع أوراق Excel
+            </label>
+            <select
+              value={excelGrouping}
+              onChange={(event) => setExcelGrouping(event.target.value as ExcelGrouping)}
+              className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="separate">ملف مستقل لكل قسم</option>
+              <option value="combined">ملف واحد بأوراق متعددة (ورقة لكل قسم)</option>
+            </select>
+          </div>
+        )}
+
         <div className="bg-blue-50 rounded-xl p-4 border-2 border-blue-200">
           <h3 className="font-bold text-blue-800 mb-3">معلومات المؤسسة (من الإعدادات):</h3>
           <div className="grid md:grid-cols-2 gap-3 text-sm">
@@ -891,7 +1497,7 @@ console.log(settings)
           ) : (
             <>
               <Download className="w-6 h-6" />
-              توليد وتحميل ورقة الغياب
+              {exportFormat === 'print' ? 'توليد وطباعة أوراق الغياب' : 'توليد وتنزيل أوراق الغياب'}
             </>
           )}
         </button>

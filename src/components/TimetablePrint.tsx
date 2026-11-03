@@ -10,6 +10,7 @@ interface TimetableEntry {
   end_time: string;
   subject_arabic: string;
   teacher_name_arabic: string;
+  teacher_id?: string;
   room_name: string;
 }
 
@@ -81,27 +82,35 @@ export const TimetablePrint: React.FC = () => {
       const entry = timetable.find(t => t.time_slot === period);
       return {
         period,
-        start_time: entry?.start_time || '00:00',
-        end_time: entry?.end_time || '00:00'
+        start_time: entry?.start_time || '',
+        end_time: entry?.end_time || ''
       };
     });
 
     const sortedPeriods = periodsWithTime.sort((a, b) => {
-      const timeA = a.start_time.split(':').map(Number);
-      const timeB = b.start_time.split(':').map(Number);
-      const minutesA = timeA[0] * 60 + timeA[1];
-      const minutesB = timeB[0] * 60 + timeB[1];
-      return minutesA - minutesB;
+      if (a.start_time && b.start_time) {
+        const timeA = a.start_time.split(':').map(Number);
+        const timeB = b.start_time.split(':').map(Number);
+        const minutesA = timeA[0] * 60 + timeA[1];
+        const minutesB = timeB[0] * 60 + timeB[1];
+        if (minutesA !== minutesB) return minutesA - minutesB;
+      }
+      const hourA = Number(a.period.match(/H(\d+)/i)?.[1] || 0);
+      const hourB = Number(b.period.match(/H(\d+)/i)?.[1] || 0);
+      if (hourA !== hourB) return hourA - hourB;
+      return Number(a.period.includes('مساء')) - Number(b.period.includes('مساء'));
     });
 
     const morningPeriods = sortedPeriods.filter(p => {
-      const hour = parseInt(p.start_time.split(':')[0]);
-      return hour < 14;
+      if (p.period.includes('صباحا')) return true;
+      if (p.period.includes('مساء')) return false;
+      return p.start_time ? parseInt(p.start_time.split(':')[0]) < 14 : true;
     }).map(p => p.period);
 
     const afternoonPeriods = sortedPeriods.filter(p => {
-      const hour = parseInt(p.start_time.split(':')[0]);
-      return hour >= 14;
+      if (p.period.includes('مساء')) return true;
+      if (p.period.includes('صباحا')) return false;
+      return p.start_time ? parseInt(p.start_time.split(':')[0]) >= 14 : false;
     }).map(p => p.period);
 
     const generateTable = (sessionPeriods: string[], sessionTitle: string) => {
@@ -116,7 +125,9 @@ export const TimetablePrint: React.FC = () => {
                 <th class="day-header">اليوم / الحصة</th>
                 ${sessionPeriods.map(period => {
                   const entry = timetable.find(t => t.time_slot === period);
-                  const timeRange = entry ? `${entry.start_time} - ${entry.end_time}` : '';
+                  const timeRange = entry?.start_time && entry.end_time
+                    ? `${entry.start_time} - ${entry.end_time}`
+                    : '';
                   return `<th class="period-header">
                     <div class="period-name">${period}</div>
                     <div class="period-time">${timeRange}</div>
@@ -133,7 +144,7 @@ export const TimetablePrint: React.FC = () => {
                     if (entry) {
                       return `<td class="period-cell">
                         <div class="subject">${entry.subject_arabic}</div>
-                        <div class="teacher">${entry.teacher_name_arabic}</div>
+                        <div class="teacher">${entry.teacher_name_arabic || entry.teacher_id || ''}</div>
                         <div class="room">قاعة: ${entry.room_name}</div>
                       </td>`;
                     }

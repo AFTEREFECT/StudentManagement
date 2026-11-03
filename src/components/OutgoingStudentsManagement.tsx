@@ -140,8 +140,8 @@ const OutgoingStudentsManagement: React.FC = () => {
       'الأكاديمية المستقبلة': s.destinationAcademy,
       'حالة الملف': s.fileStatus,
       'المرجع الإداري': s.administrativeReference,
-      'عدد الإرسالات': s.sendCount,
-      'آخر إرسال': s.lastSendDate ? new Date(s.lastSendDate).toLocaleDateString('ar') : '-',
+      'عدد وثائق الإرسال المنشأة': s.sendCount,
+      'تاريخ آخر وثيقة منشأة': s.lastSendDate ? new Date(s.lastSendDate).toLocaleDateString('ar') : '-',
       'ملاحظات': s.notes
     }));
 
@@ -177,7 +177,7 @@ const OutgoingStudentsManagement: React.FC = () => {
   const statistics = {
     total: students.length,
     notSent: students.filter(s => s.fileStatus === 'لم يُرسل').length,
-    sent: students.filter(s => s.fileStatus === 'تم الإرسال').length,
+    sent: students.reduce((count, student) => count + (student.sendCount || 0), 0),
     postponed: students.filter(s => s.fileStatus === 'مؤجل').length,
     cancelled: students.filter(s => s.fileStatus === 'ملغى').length,
     males: students.filter(s => s.gender === 'ذكر').length,
@@ -185,22 +185,35 @@ const OutgoingStudentsManagement: React.FC = () => {
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-5 md:p-8 max-w-[1500px] mx-auto space-y-6">
       {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-12 h-12 bg-gradient-to-br from-orange-500 to-red-600 rounded-xl flex items-center justify-center shadow-lg">
-            <Send className="w-7 h-7 text-white" />
+      <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-6 md:p-7">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-5 mb-6">
+          <div className="flex items-center gap-4">
+            <div className="w-14 h-14 bg-orange-50 text-orange-700 rounded-2xl flex items-center justify-center">
+              <Send className="w-7 h-7" />
+            </div>
+            <div>
+              <p className="text-sm text-orange-700 font-semibold mb-1">حركية التلاميذ</p>
+              <h1 className="text-2xl md:text-3xl font-bold text-slate-900">تدبير التلاميذ المغادرين</h1>
+              <p className="text-sm text-slate-500 mt-1">متابعة اللوائح ووجهات الاستقبال ووثائق الإرسال</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">تدبير المغادرين</h1>
-            <p className="text-gray-600">إدارة التلاميذ المغادرين ومتابعة إرسال الملفات</p>
+          <div className="flex gap-3">
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-5 py-3 min-w-28">
+              <span className="block text-xs text-slate-500">إجمالي المغادرين</span>
+              <strong className="block text-2xl text-slate-900 mt-1">{statistics.total}</strong>
+            </div>
+            <div className="rounded-xl bg-orange-50 border border-orange-100 px-5 py-3 min-w-28">
+              <span className="block text-xs text-orange-800">وثائق أُنشئت</span>
+              <strong className="block text-2xl text-orange-900 mt-1">{statistics.sent}</strong>
+            </div>
           </div>
         </div>
 
         {/* Statistics Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-xl border border-blue-200">
+        <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
+          <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
             <div className="flex items-center gap-2 mb-2">
               <Users className="w-5 h-5 text-blue-600" />
               <span className="text-sm font-medium text-blue-900">المجموع</span>
@@ -208,7 +221,7 @@ const OutgoingStudentsManagement: React.FC = () => {
             <p className="text-3xl font-bold text-blue-600">{statistics.total}</p>
           </div>
 
-          <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-xl border border-gray-200">
+          <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
             <div className="flex items-center gap-2 mb-2">
               <Clock className="w-5 h-5 text-gray-600" />
               <span className="text-sm font-medium text-gray-900">لم يُرسل</span>
@@ -216,15 +229,15 @@ const OutgoingStudentsManagement: React.FC = () => {
             <p className="text-3xl font-bold text-gray-600">{statistics.notSent}</p>
           </div>
 
-          <div className="bg-gradient-to-br from-green-50 to-green-100 p-4 rounded-xl border border-green-200">
+          <div className="bg-green-50 p-4 rounded-xl border border-green-100">
             <div className="flex items-center gap-2 mb-2">
               <CheckCircle className="w-5 h-5 text-green-600" />
-              <span className="text-sm font-medium text-green-900">تم الإرسال</span>
+              <span className="text-sm font-medium text-green-900">وثائق أُنشئت</span>
             </div>
             <p className="text-3xl font-bold text-green-600">{statistics.sent}</p>
           </div>
 
-          <div className="bg-gradient-to-br from-yellow-50 to-yellow-100 p-4 rounded-xl border border-yellow-200">
+          <div className="bg-amber-50 p-4 rounded-xl border border-amber-100">
             <div className="flex items-center gap-2 mb-2">
               <AlertCircle className="w-5 h-5 text-yellow-600" />
               <span className="text-sm font-medium text-yellow-900">مؤجل</span>
@@ -232,7 +245,7 @@ const OutgoingStudentsManagement: React.FC = () => {
             <p className="text-3xl font-bold text-yellow-600">{statistics.postponed}</p>
           </div>
 
-          <div className="bg-gradient-to-br from-red-50 to-red-100 p-4 rounded-xl border border-red-200">
+          <div className="bg-rose-50 p-4 rounded-xl border border-rose-100">
             <div className="flex items-center gap-2 mb-2">
               <X className="w-5 h-5 text-red-600" />
               <span className="text-sm font-medium text-red-900">ملغى</span>
@@ -242,39 +255,39 @@ const OutgoingStudentsManagement: React.FC = () => {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-2 bg-gray-100 p-1 rounded-lg">
+        <div className="flex flex-wrap gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
           <button
             onClick={() => setActiveTab('management')}
-            className={`flex-1 px-4 py-2 rounded-lg font-medium transition-all ${
+            className={`px-4 py-2.5 rounded-lg font-medium transition-all ${
               activeTab === 'management'
                 ? 'bg-white text-orange-600 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
-            <Users className="w-4 h-4 inline mr-2" />
-            إدارة المغادرين
+            <Users className="w-4 h-4 inline ml-2" />
+            قائمة المغادرين
           </button>
           <button
             onClick={() => setActiveTab('import')}
-            className={`flex-1 px-4 py-2 rounded-lg font-medium transition-all ${
+            className={`px-4 py-2.5 rounded-lg font-medium transition-all ${
               activeTab === 'import'
                 ? 'bg-white text-orange-600 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
-            <Upload className="w-4 h-4 inline mr-2" />
-            استيراد ملفات الاكسيل
+            <Upload className="w-4 h-4 inline ml-2" />
+            استيراد اللائحة
           </button>
           <button
             onClick={() => setActiveTab('statistics')}
-            className={`flex-1 px-4 py-2 rounded-lg font-medium transition-all ${
+            className={`px-4 py-2.5 rounded-lg font-medium transition-all ${
               activeTab === 'statistics'
                 ? 'bg-white text-orange-600 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
-            <BarChart3 className="w-4 h-4 inline mr-2" />
-            إحصائيات
+            <BarChart3 className="w-4 h-4 inline ml-2" />
+            الإحصائيات
           </button>
         </div>
       </div>
@@ -283,7 +296,7 @@ const OutgoingStudentsManagement: React.FC = () => {
       {activeTab === 'management' && (
         <div className="space-y-6">
           {/* Search and Filters */}
-          <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+          <div className="bg-white rounded-xl p-5 shadow-sm border border-slate-200">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="lg:col-span-2">
                 <div className="relative">
@@ -329,7 +342,7 @@ const OutgoingStudentsManagement: React.FC = () => {
                 className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 <Send className="w-4 h-4" />
-                إرسال الملفات ({selectedStudents.size})
+                إنشاء وثائق الإرسال ({selectedStudents.size})
               </button>
               <button
                 onClick={exportToExcel}
@@ -357,7 +370,7 @@ const OutgoingStudentsManagement: React.FC = () => {
           </div>
 
           {/* Students Table */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50 border-b border-gray-200">
@@ -598,11 +611,11 @@ const OutgoingStudentsManagement: React.FC = () => {
                   <p className="text-gray-900">{selectedStudent.administrativeReference || '-'}</p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-600">عدد الإرسالات</label>
+                  <label className="text-sm font-medium text-gray-600">عدد وثائق الإرسال المنشأة</label>
                   <p className="text-gray-900">{selectedStudent.sendCount}</p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-600">آخر إرسال</label>
+                  <label className="text-sm font-medium text-gray-600">تاريخ آخر وثيقة منشأة</label>
                   <p className="text-gray-900">{selectedStudent.lastSendDate ? new Date(selectedStudent.lastSendDate).toLocaleDateString('ar') : '-'}</p>
                 </div>
               </div>

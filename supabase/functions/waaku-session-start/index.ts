@@ -4,132 +4,206 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, x-client-info",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-const WAAKU_SERVER_URL = Deno.env.get("WA_SERVER_URL")!;
-const WAAKU_API_KEY = Deno.env.get("WA_MASTER_API_KEY")!;
 const supabaseAdmin = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-function normalizeStatus(rawStatus?: string): "CONNECTED" | "SCANNING" | "DISCONNECTED" {
-  if (!rawStatus) return "SCANNING";
-  const s = rawStatus.toUpperCase();
-  if (s === "CONNECTED" || s === "READY") return "CONNECTED";
-  if (s.includes("SCANNING") || s.includes("CONNECTING")) return "SCANNING";
-  return "DISCONNECTED";
-}
-
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  if (req.method !== "POST") {
+    return new Response(
+      JSON.stringify({ success: false, error: "Method Not Allowed" }),
+      {
+        status: 405,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   }
 
   try {
-    const { id: institutionId } = await req.json();
-    if (!institutionId) throw new Error("Institution ID is required");
+    const body = await req.json().catch(() => ({}));
+    const institutionId = body.id || body.institutionId;
 
-    // 1️⃣ جلب معلومات المؤسسة
-    const { data: inst, error: fetchError } = await supabaseAdmin
+    if (!institutionId) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Institution ID is required" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const { data: institution, error } = await supabaseAdmin
       .from("institutions")
-      .select("greza")
+      .select("id, name, whatsapp_session_id")
       .eq("id", institutionId)
       .single();
-    
-    if (fetchError || !inst || !inst.greza) {
-      throw new Error("Institution or GREZA not found.");
+
+    if (error || !institution) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Institution not found" }),
+        {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
-    const sessionId = inst.greza;
+    const baseUrl = Deno.env.get("WAAKU_BASE_URL");
+    const apiKey = Deno.env.get("WAAKU_API_KEY");
+    const cfClientId = Deno.env.get("CF_ACCESS_CLIENT_ID");
+    const cfClientSecret = Deno.env.get("CF_ACCESS_CLIENT_SECRET");
 
-    // 2️⃣ التحقق من حالة الجلسة الحالية على الخادم
-    console.log(`🔍 Checking existing session on Waaku: ${sessionId}`);
-    const checkResponse = await fetch(`${WAAKU_SERVER_URL}/api/sessions/${sessionId}`, {
-      headers: { "X-Api-Key": WAAKU_API_KEY },
-    });
-
-    // 3️⃣ إذا كانت موجودة، حذفها أولاً
-    if (checkResponse.ok) {
-      console.log("🗑️ Deleting existing session...");
-      await fetch(`${WAAKU_SERVER_URL}/api/sessions/${sessionId}`, {
-        method: "DELETE",
-        headers: { "X-Api-Key": WAAKU_API_KEY },
-      });
-      
-      // انتظار قليل للسماح للخادم بالتنظيف
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    if (!baseUrl) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Missing WAAKU_BASE_URL" }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
-    // 4️⃣ إنشاء جلسة جديدة
-    console.log("🆕 Creating new session...");
-    const createResponse = await fetch(`${WAAKU_SERVER_URL}/api/sessions`, {
+    const cleanBase = baseUrl.replace(/\/+$/, "");
+    const sessionId = String(institution.whatsapp_session_id || institution.id);
+
+    const authHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (cfClientId && cfClientSecret) {
+      authHeaders["CF-Access-Client-Id"] = cfClientId;
+      authHeaders["CF-Access-Client-Secret"] = cfClientSecret;
+    } else if (apiKey) {
+      authHeaders["Authorization"] = `Bearer ${apiKey}`;
+    } else {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: "Missing Waaku authentication secrets",
+        }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const createRes = await fetch(`${cleanBase}/api/sessions`, {
       method: "POST",
-      headers: { 
-        "Content-Type": "application/json", 
-        "X-Api-Key": WAAKU_API_KEY 
-      },
+      headers: authHeaders,
       body: JSON.stringify({ id: sessionId }),
     });
 
-    if (!createResponse.ok) {
-      const errorData = await createResponse.json().catch(() => ({}));
-      throw new Error(errorData.error || `Failed to create session: ${createResponse.status}`);
+    const createText = await createRes.text().catch(() => "");
+    let createData: any = {};
+
+    try {
+      createData = createText ? JSON.parse(createText) : {};
+    } catch {
+      createData = { raw: createText };
     }
 
-    // 5️⃣ ✅ التحقق من الحالة الفعلية من الخادم مباشرة
-    console.log("🔄 Verifying session status from server...");
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    const verifyResponse = await fetch(`${WAAKU_SERVER_URL}/api/sessions/${sessionId}`, {
-      headers: { "X-Api-Key": WAAKU_API_KEY },
-    });
-
-    let realStatus = "SCANNING";
-    let phoneNumber = null;
-    
-    if (verifyResponse.ok) {
-      const sessionData = await verifyResponse.json();
-      console.log("📊 Real session data:", sessionData);
-      
-      realStatus = normalizeStatus(sessionData.status);
-      phoneNumber = sessionData.phone || sessionData.phoneNumber || null;
+    if (!createRes.ok) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: "Failed to create session",
+          status: createRes.status,
+          details: createData,
+          sessionId,
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
-    // 6️⃣ تحديث قاعدة البيانات بالحالة الحقيقية
-    const { error: updateError } = await supabaseAdmin
-      .from("institutions")
-      .update({ 
-        whatsapp_session_id: sessionId, 
-        whatsapp_session_status: realStatus,
-        whatsapp_phone_number: phoneNumber,
-        whatsapp_last_checked: new Date().toISOString()
-      })
-      .eq("id", institutionId);
-    
-    if (updateError) {
-      console.error("⚠️ DB update warning:", updateError.message);
-    }
+    let qr: string | null = null;
+    let status: "SCANNING" | "CONNECTED" | "DISCONNECTED" = "DISCONNECTED";
 
-    console.log(`✅ Session created with real status: ${realStatus}`);
-
-    return new Response(
-      JSON.stringify({ 
-        success: true, 
-        sessionId,
-        status: realStatus,
-        phoneNumber,
-        source: "waaku_server"
-      }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    const qrRes = await fetch(
+      `${cleanBase}/api/sessions/${encodeURIComponent(sessionId)}/qr`,
+      {
+        method: "GET",
+        headers: authHeaders,
+      }
     );
 
-  } catch (e) {
-    console.error("❌ Error:", e);
+    const qrText = await qrRes.text().catch(() => "");
+    let qrData: any = {};
+
+    try {
+      qrData = qrText ? JSON.parse(qrText) : {};
+    } catch {
+      qrData = { raw: qrText };
+    }
+
+    qr =
+      qrData?.qr ||
+      qrData?.qrcode ||
+      qrData?.base64 ||
+      qrData?.data ||
+      null;
+
+    status = qr ? "SCANNING" : "DISCONNECTED";
+
+    const { error: updateError } = await supabaseAdmin
+      .from("institutions")
+      .update({
+        whatsapp_session_id: sessionId,
+        whatsapp_session_status: status,
+        whatsapp_phone_number: null,
+        whatsapp_last_checked: new Date().toISOString(),
+      })
+      .eq("id", institutionId);
+
+    if (updateError) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: "Failed to update institution session",
+          details: updateError.message,
+        }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
     return new Response(
-      JSON.stringify({ error: (e as Error).message }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({
+        success: true,
+        sessionId,
+        status,
+        qr,
+        createData,
+      }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
     );
   }
 });

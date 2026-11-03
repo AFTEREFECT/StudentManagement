@@ -47,7 +47,7 @@ const OutgoingStudentRequestForm: React.FC<OutgoingStudentRequestFormProps> = ({
   onCancel,
 }) => {
   const [requestData, setRequestData] = useState({
-    serviceType: 'مصلحة التأطير و تنشيط المؤسسات التعليمية ،و التوجيه',
+    serviceType: ServiceManager.getSelectedServiceName(),
     institutionName: '',
     sendDate: new Date().toISOString().split('T')[0],
     sendingNumber: '',
@@ -158,6 +158,7 @@ const OutgoingStudentRequestForm: React.FC<OutgoingStudentRequestFormProps> = ({
       }
       const newService = ServiceManager.addService(newServiceName, newServiceDescription);
       setServices(ServiceManager.getServices());
+      ServiceManager.setSelectedServiceName(newService.name);
       setRequestData(prev => ({ ...prev, serviceType: newService.name }));
       setShowAddServiceModal(false);
       setNewServiceName('');
@@ -181,7 +182,9 @@ const OutgoingStudentRequestForm: React.FC<OutgoingStudentRequestFormProps> = ({
         setServices(ServiceManager.getServices());
         const deletedService = services.find(s => s.id === serviceToDelete);
         if (deletedService && requestData.serviceType === deletedService.name) {
-          setRequestData(prev => ({ ...prev, serviceType: 'مصلحة الشؤون التربوية' }));
+          const fallbackService = ServiceManager.getServices()[0];
+          ServiceManager.setSelectedServiceName(fallbackService.name);
+          setRequestData(prev => ({ ...prev, serviceType: fallbackService.name }));
         }
         setShowDeleteServiceModal(false);
         setServiceToDelete(null);
@@ -602,7 +605,10 @@ return (
         <select
           className="flex-1 min-w-[120px] max-w-[200px] px-2 py-1 rounded border border-gray-300"
           value={requestData.serviceType}
-          onChange={e => setRequestData({ ...requestData, serviceType: e.target.value })}
+          onChange={e => {
+            ServiceManager.setSelectedServiceName(e.target.value);
+            setRequestData(prev => ({ ...prev, serviceType: e.target.value }));
+          }}
         >
           <option value="">اختر المصلحة</option>
           {services.map(service => (

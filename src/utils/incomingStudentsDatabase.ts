@@ -1,10 +1,12 @@
 import * as XLSX from 'xlsx';
 import { dbManager } from './database';
+import { normalizeExcelDate } from './excelDate';
+import { canonicalAcademy, canonicalDirectorate, isDirectorateInAcademy, isKnownAcademy } from './academyDirectory';
 
 // قاعدة بيانات مستقلة للتلاميذ الوافدين
 // منفصلة تماماً عن قاعدة بيانات التلاميذ الأصليين
 
-interface IncomingStudent {
+export interface IncomingStudent {
   id: string;
   studentId: string;           // رقم التلميذ
   lastName: string;            // النسب
@@ -40,15 +42,95 @@ interface IncomingStudent {
   updatedAt: string;
 }
 
-interface FileRequest {
+export interface FileRequest {
   id: string;
   studentId: string;
   requestNumber: string;
   requestDate: string;
   institutionName: string;
+  sendingNumber: string;
+  reference: string;
+  senderAcademy: string;
+  senderDirectorate: string;
+  senderInstitution: string;
+  recipientDirectorate: string;
+  recipientAcademy: string;
+  requestType: 'فردي' | 'جماعي';
+  regionalScope: 'داخل الإقليم' | 'خارج الإقليم';
   pdfGenerated: boolean;
   notes: string;
 }
+
+export type IncomingStudentInput = Omit<
+  IncomingStudent,
+  'id' | 'createdAt' | 'updatedAt' | 'linkedGender' | 'linkedSection' | 'linkedNationalId' | 'isLinked'
+>;
+
+export interface IncomingFileRequestDetails {
+  requestDate: string;
+  sendingNumber: string;
+  requestNumber: string;
+  reference: string;
+  senderAcademy: string;
+  senderDirectorate: string;
+  senderInstitution: string;
+  recipientDirectorate: string;
+  recipientAcademy: string;
+  requestType: 'فردي' | 'جماعي';
+  regionalScope: 'داخل الإقليم' | 'خارج الإقليم';
+  notes: string;
+}
+
+const normalizeIncomingStudent = (value: Partial<IncomingStudent> & Record<string, unknown>): IncomingStudent => {
+  const now = new Date().toISOString();
+  return {
+    id: String(value.id || crypto.randomUUID()),
+    studentId: String(value.studentId || value.linkedNationalId || value.nationalId || ''),
+    lastName: String(value.lastName || ''),
+    firstName: String(value.firstName || ''),
+    transferDate: normalizeExcelDate(value.transferDate || value.enrollmentDate),
+    transferType: String(value.transferType || 'تحويل عادي'),
+    originalInstitution: String(value.originalInstitution || value.previousInstitution || ''),
+    originalDirectorate: String(value.originalDirectorate || ''),
+    originalAcademy: String(value.originalAcademy || ''),
+    academy: String(value.academy || ''),
+    directorate: String(value.directorate || ''),
+    level: String(value.level || ''),
+    municipality: String(value.municipality || ''),
+    institution: String(value.institution || ''),
+    academicYear: String(value.academicYear || ''),
+    fileStatus: (value.fileStatus as IncomingStudent['fileStatus']) || 'لم يتم الإرسال',
+    requestCount: Number(value.requestCount || 0),
+    requestDates: Array.isArray(value.requestDates) ? value.requestDates.map(String) : [],
+    lastRequestDate: value.lastRequestDate ? String(value.lastRequestDate) : undefined,
+    notes: String(value.notes || ''),
+    linkedGender: value.linkedGender as IncomingStudent['linkedGender'],
+    linkedSection: value.linkedSection ? String(value.linkedSection) : undefined,
+    linkedNationalId: value.linkedNationalId ? String(value.linkedNationalId) : undefined,
+    isLinked: Boolean(value.isLinked),
+    createdAt: String(value.createdAt || now),
+    updatedAt: String(value.updatedAt || now)
+  };
+};
+
+const normalizeFileRequest = (value: Partial<FileRequest> & Record<string, unknown>): FileRequest => ({
+  id: String(value.id || crypto.randomUUID()),
+  studentId: String(value.studentId || ''),
+  requestNumber: String(value.requestNumber || ''),
+  requestDate: normalizeExcelDate(value.requestDate) || String(value.requestDate || ''),
+  institutionName: String(value.institutionName || ''),
+  sendingNumber: String(value.sendingNumber || ''),
+  reference: String(value.reference || ''),
+  senderAcademy: String(value.senderAcademy || ''),
+  senderDirectorate: String(value.senderDirectorate || ''),
+  senderInstitution: String(value.senderInstitution || ''),
+  recipientDirectorate: String(value.recipientDirectorate || ''),
+  recipientAcademy: String(value.recipientAcademy || ''),
+  requestType: value.requestType === 'جماعي' ? 'جماعي' : 'فردي',
+  regionalScope: value.regionalScope === 'خارج الإقليم' ? 'خارج الإقليم' : 'داخل الإقليم',
+  pdfGenerated: Boolean(value.pdfGenerated),
+  notes: String(value.notes || '')
+});
 
 interface ImportResult {
   success: number;
@@ -60,20 +142,60 @@ interface ImportResult {
 }
 
 class IncomingStudentsDatabase {
-  private readonly STORAGE_KEY = 'incomingStudentsData';
-  private readonly REQUESTS_KEY = 'incomingStudentRequests';
+  private readonly LEGACY_STORAGE_KEY = 'incomingStudentsData';
+  private readonly LEGACY_REQUESTS_KEY = 'incomingStudentRequests';
+  private legacyDataMigrated = false;
+
+  private async migrateLegacyData(): Promise<void> {
+    if (this.legacyDataMigrated) return;
+    await dbManager.initialize();
+
+    const legacyStudentsValue = localStorage.getItem(this.LEGACY_STORAGE_KEY);
+    const legacyRequestsValue = localStorage.getItem(this.LEGACY_REQUESTS_KEY);
+    const legacyStudents = legacyStudentsValue
+      ? (JSON.parse(legacyStudentsValue) as Array<Partial<IncomingStudent> & Record<string, unknown>>)
+          .map(normalizeIncomingStudent)
+      : [];
+    const legacyRequests = legacyRequestsValue
+      ? (JSON.parse(legacyRequestsValue) as Array<Partial<FileRequest> & Record<string, unknown>>)
+          .map(normalizeFileRequest)
+      : [];
+
+    const storedStudents = await dbManager.getLocalMobilityRecords<IncomingStudent>('incoming-student');
+    const storedRequests = await dbManager.getLocalMobilityRecords<FileRequest>('incoming-request');
+    const students = new Map(legacyStudents.map(student => [student.id, student]));
+    const requests = new Map(legacyRequests.map(request => [request.id, request]));
+    storedStudents.forEach(student => students.set(student.id, student));
+    storedRequests.forEach(request => requests.set(request.id, request));
+
+    if (legacyStudentsValue) {
+      await dbManager.replaceLocalMobilityRecords(
+        'incoming-student',
+        Array.from(students.values()).map(student => ({ ...student, studentId: student.studentId }))
+      );
+      localStorage.removeItem(this.LEGACY_STORAGE_KEY);
+    }
+    if (legacyRequestsValue) {
+      await dbManager.replaceLocalMobilityRecords(
+        'incoming-request',
+        Array.from(requests.values()).map(request => ({ ...request, studentId: request.studentId }))
+      );
+      localStorage.removeItem(this.LEGACY_REQUESTS_KEY);
+    }
+    this.legacyDataMigrated = true;
+  }
 
   // تحميل جميع التلاميذ الوافدين مع الربط
   async getAllStudents(): Promise<IncomingStudent[]> {
     try {
-      const data = localStorage.getItem(this.STORAGE_KEY);
-      const students: IncomingStudent[] = data ? JSON.parse(data) : [];
+      await this.migrateLegacyData();
+      const students = await dbManager.getLocalMobilityRecords<IncomingStudent>('incoming-student');
       
       // ربط البيانات مع القاعدة الرئيسية
       return await this.linkWithMainDatabase(students);
     } catch (error) {
       console.error('خطأ في تحميل بيانات التلاميذ الوافدين:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -129,8 +251,10 @@ class IncomingStudentsDatabase {
         const { linkedGender, linkedSection, linkedNationalId, isLinked, ...basicData } = student;
         return basicData;
       });
-      
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(studentsToSave));
+      await dbManager.replaceLocalMobilityRecords(
+        'incoming-student',
+        studentsToSave.map(student => ({ ...student, studentId: student.studentId }))
+      );
     } catch (error) {
       console.error('خطأ في حفظ بيانات التلاميذ الوافدين:', error);
       throw error;
@@ -138,7 +262,7 @@ class IncomingStudentsDatabase {
   }
 
   // إضافة تلميذ وافد جديد
-  async addStudent(studentData: Omit<IncomingStudent, 'id' | 'createdAt' | 'updatedAt' | 'linkedGender' | 'linkedSection' | 'linkedNationalId' | 'isLinked'>): Promise<string> {
+  async addStudent(studentData: IncomingStudentInput): Promise<string> {
     try {
       const students = await this.getAllStudents();
       
@@ -227,7 +351,7 @@ class IncomingStudentsDatabase {
   }
 
   // إضافة طلب ملف جديد
-  async addFileRequest(studentId: string): Promise<string> {
+  async addFileRequest(studentId: string, details: IncomingFileRequestDetails): Promise<string> {
     try {
       const students = await this.getAllStudents();
       const student = students.find(s => s.id === studentId);
@@ -237,8 +361,8 @@ class IncomingStudentsDatabase {
       }
 
       // توليد رقم الطلب
-      const requestNumber = this.generateRequestNumber(student.requestCount + 1);
-      const requestDate = new Date().toISOString().split('T')[0];
+      const requestNumber = details.requestNumber || this.generateRequestNumber(student.requestCount + 1);
+      const requestDate = details.requestDate;
 
       // تحديث بيانات التلميذ
       const updatedRequestDates = [...student.requestDates, requestDate];
@@ -257,8 +381,17 @@ class IncomingStudentsDatabase {
         requestNumber,
         requestDate,
         institutionName: student.originalInstitution,
-        pdfGenerated: false,
-        notes: ''
+        sendingNumber: details.sendingNumber,
+        reference: details.reference,
+        senderAcademy: details.senderAcademy,
+        senderDirectorate: details.senderDirectorate,
+        senderInstitution: details.senderInstitution,
+        recipientDirectorate: details.recipientDirectorate || student.originalDirectorate,
+        recipientAcademy: details.recipientAcademy || student.originalAcademy,
+        requestType: details.requestType,
+        regionalScope: details.regionalScope,
+        pdfGenerated: true,
+        notes: details.notes
       };
 
       await this.saveFileRequest(fileRequest);
@@ -285,7 +418,10 @@ class IncomingStudentsDatabase {
     try {
       const requests = await this.getAllFileRequests();
       requests.push(request);
-      localStorage.setItem(this.REQUESTS_KEY, JSON.stringify(requests));
+      await dbManager.replaceLocalMobilityRecords(
+        'incoming-request',
+        requests.map(item => ({ ...item, studentId: item.studentId }))
+      );
     } catch (error) {
       console.error('خطأ في حفظ طلب الملف:', error);
       throw error;
@@ -295,11 +431,11 @@ class IncomingStudentsDatabase {
   // تحميل جميع طلبات الملفات
   async getAllFileRequests(): Promise<FileRequest[]> {
     try {
-      const data = localStorage.getItem(this.REQUESTS_KEY);
-      return data ? JSON.parse(data) : [];
+      await this.migrateLegacyData();
+      return await dbManager.getLocalMobilityRecords<FileRequest>('incoming-request');
     } catch (error) {
       console.error('خطأ في تحميل طلبات الملفات:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -321,7 +457,16 @@ class IncomingStudentsDatabase {
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
       
       // استخراج البيانات الوصفية من الخلايا المحددة
-      const metadata = this.extractMetadataFromSheet(worksheet);
+      const rawMetadata = this.extractMetadataFromSheet(worksheet);
+      const normalizedAcademy = canonicalAcademy(rawMetadata.academy);
+      const metadata = {
+        ...rawMetadata,
+        academy: normalizedAcademy,
+        directorate: canonicalDirectorate(rawMetadata.directorate, normalizedAcademy)
+      };
+      if (!metadata.academy || !metadata.directorate || !metadata.institution) {
+        throw new Error('تعذر قراءة المؤسسة أو المديرية أو الأكاديمية من ترويسة لائحة الوافدين.');
+      }
       
       const students = await this.getAllStudents();
       const existingStudentIds = new Set(students.map(s => s.studentId));
@@ -332,6 +477,13 @@ class IncomingStudentsDatabase {
       let unlinkedCount = 0;
       const errors: string[] = [];
       const warnings: string[] = [];
+      if (
+        isKnownAcademy(metadata.academy) &&
+        metadata.directorate &&
+        !isDirectorateInAcademy(metadata.directorate, metadata.academy)
+      ) {
+        warnings.push('بيانات ترويسة المؤسسة لا تطابق علاقة الأكاديمية والمديرية في اللائحة المرجعية.');
+      }
 
       // قراءة البيانات من الصف 11 فما فوق
       const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1:Z1000');
@@ -342,11 +494,14 @@ class IncomingStudentsDatabase {
           const studentId = this.getCellValue(worksheet, `A${rowIndex + 1}`);        // رقم التلميذ
           const lastName = this.getCellValue(worksheet, `B${rowIndex + 1}`);         // النسب
           const firstName = this.getCellValue(worksheet, `C${rowIndex + 1}`);        // الاسم
-          const transferDate = this.getCellValue(worksheet, `D${rowIndex + 1}`);     // تاريخ التحويل
+          const transferDate = this.getRawCellValue(worksheet, `D${rowIndex + 1}`);  // تاريخ التحويل
           const transferType = this.getCellValue(worksheet, `E${rowIndex + 1}`);     // نوع التحويل
+          const receivingInstitution = this.getCellValue(worksheet, `F${rowIndex + 1}`);
           const originalInstitution = this.getCellValue(worksheet, `G${rowIndex + 1}`); // المؤسسة الأصلية
-          const originalDirectorate = this.getCellValue(worksheet, `H${rowIndex + 1}`); // المديرية الأصلية
-          const originalAcademy = this.getCellValue(worksheet, `I${rowIndex + 1}`);     // الأكاديمية الأصلية
+          const rawOriginalDirectorate = this.getCellValue(worksheet, `H${rowIndex + 1}`);
+          const rawOriginalAcademy = this.getCellValue(worksheet, `I${rowIndex + 1}`);
+          const originalAcademy = canonicalAcademy(rawOriginalAcademy);
+          const originalDirectorate = canonicalDirectorate(rawOriginalDirectorate, originalAcademy);
 
           // التحقق من البيانات الأساسية
           if (!studentId || !firstName || !lastName) {
@@ -364,11 +519,17 @@ class IncomingStudentsDatabase {
           }
 
           // إنشاء بيانات التلميذ الوافد
-          const incomingStudentData: Omit<IncomingStudent, 'id' | 'createdAt' | 'updatedAt' | 'linkedGender' | 'linkedSection' | 'linkedNationalId' | 'isLinked'> = {
+          const normalizedTransferDate = this.formatDate(transferDate);
+          if (transferDate && !normalizedTransferDate) {
+            errors.push(`صف ${rowIndex + 1}: تاريخ التحويل غير صالح (${transferDate})`);
+            continue;
+          }
+
+          const incomingStudentData: IncomingStudentInput = {
             studentId,
             lastName,
             firstName,
-            transferDate: this.formatDate(transferDate),
+            transferDate: normalizedTransferDate,
             transferType: transferType || 'تحويل عادي',
             originalInstitution: originalInstitution || '',
             originalDirectorate: originalDirectorate || '',
@@ -379,7 +540,7 @@ class IncomingStudentsDatabase {
             directorate: metadata.directorate,
             level: metadata.level,
             municipality: metadata.municipality,
-            institution: metadata.institution,
+            institution: receivingInstitution || metadata.institution,
             academicYear: metadata.academicYear,
             
             // حالة الملف الافتراضية
@@ -388,6 +549,16 @@ class IncomingStudentsDatabase {
             requestDates: [],
             notes: `مستورد من ${file.name} - صف ${rowIndex + 1}`
           };
+          if (originalAcademy !== rawOriginalAcademy.trim() || originalDirectorate !== rawOriginalDirectorate.trim()) {
+            warnings.push(`صف ${rowIndex + 1}: تم توحيد اسم الأكاديمية أو المديرية وفق اللائحة المرجعية.`);
+          }
+          if (
+            isKnownAcademy(originalAcademy) &&
+            originalDirectorate &&
+            !isDirectorateInAcademy(originalDirectorate, originalAcademy)
+          ) {
+            warnings.push(`صف ${rowIndex + 1}: المديرية الأصلية غير موجودة ضمن الأكاديمية المحددة في اللائحة المرجعية.`);
+          }
 
           await this.addStudent(incomingStudentData);
           existingStudentIds.add(studentId);
@@ -432,13 +603,14 @@ class IncomingStudentsDatabase {
 
   // استخراج البيانات الوصفية من ورقة العمل
   private extractMetadataFromSheet(worksheet: XLSX.WorkSheet) {
+    const cleanMetadata = (value: string) => value.replace(/^[^:：]+[:：]\s*/, '').trim();
     return {
-      academy: this.getCellValue(worksheet, 'C5').trim(),        // الأكاديمية
-      directorate: this.getCellValue(worksheet, 'C6').trim(),    // المديرية
-      level: this.getCellValue(worksheet, 'C7').trim(),          // المستوى
-      municipality: this.getCellValue(worksheet, 'G5').trim(),   // الجماعة
-      institution: this.getCellValue(worksheet, 'G6').trim(),    // المؤسسة
-      academicYear: this.getCellValue(worksheet, 'G7').trim()    // السنة الدراسية
+      academy: cleanMetadata(this.getCellValue(worksheet, 'C5')),
+      directorate: cleanMetadata(this.getCellValue(worksheet, 'C6')),
+      level: cleanMetadata(this.getCellValue(worksheet, 'C7')),
+      municipality: cleanMetadata(this.getCellValue(worksheet, 'G5')),
+      institution: cleanMetadata(this.getCellValue(worksheet, 'G6')),
+      academicYear: cleanMetadata(this.getCellValue(worksheet, 'G7'))
     };
   }
 
@@ -449,6 +621,10 @@ class IncomingStudentsDatabase {
       return '';
     }
     return String(cell.v).trim();
+  }
+
+  private getRawCellValue(worksheet: XLSX.WorkSheet, cellAddress: string): unknown {
+    return worksheet[cellAddress]?.v ?? '';
   }
 
   // قراءة ملف Excel
@@ -471,37 +647,15 @@ class IncomingStudentsDatabase {
 
   // تنسيق التاريخ
   private formatDate(dateValue: any): string {
-    if (!dateValue) return '';
-    
-    try {
-      if (typeof dateValue === 'number') {
-        const excelDate = new Date((dateValue - 25569) * 86400 * 1000);
-        return excelDate.toISOString().split('T')[0];
-      }
-      
-      if (typeof dateValue === 'string') {
-        const date = new Date(dateValue);
-        if (!isNaN(date.getTime())) {
-          return date.toISOString().split('T')[0];
-        }
-      }
-      
-      if (dateValue instanceof Date) {
-        return dateValue.toISOString().split('T')[0];
-      }
-      
-      return '';
-    } catch (error) {
-      console.warn('خطأ في تنسيق التاريخ:', dateValue, error);
-      return '';
-    }
+    return normalizeExcelDate(dateValue);
   }
 
   // مسح جميع البيانات
   async clearAllData(): Promise<void> {
     try {
-      localStorage.removeItem(this.STORAGE_KEY);
-      localStorage.removeItem(this.REQUESTS_KEY);
+      await this.migrateLegacyData();
+      await dbManager.clearLocalMobilityRecords('incoming-student');
+      await dbManager.clearLocalMobilityRecords('incoming-request');
     } catch (error) {
       console.error('خطأ في مسح البيانات:', error);
       throw error;
@@ -543,14 +697,27 @@ class IncomingStudentsDatabase {
   // استيراد البيانات
   async importData(jsonData: string): Promise<void> {
     try {
+      await this.migrateLegacyData();
       const data = JSON.parse(jsonData);
       
       if (data.students && Array.isArray(data.students)) {
-        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data.students));
+        await dbManager.replaceLocalMobilityRecords(
+          'incoming-student',
+          data.students.map((student: Partial<IncomingStudent> & Record<string, unknown>) => {
+            const normalized = normalizeIncomingStudent(student);
+            return { ...normalized, studentId: normalized.studentId };
+          })
+        );
       }
       
       if (data.requests && Array.isArray(data.requests)) {
-        localStorage.setItem(this.REQUESTS_KEY, JSON.stringify(data.requests));
+        await dbManager.replaceLocalMobilityRecords(
+          'incoming-request',
+          data.requests.map((request: Partial<FileRequest> & Record<string, unknown>) => {
+            const normalized = normalizeFileRequest(request);
+            return { ...normalized, studentId: normalized.studentId };
+          })
+        );
       }
     } catch (error) {
       console.error('خطأ في استيراد البيانات:', error);

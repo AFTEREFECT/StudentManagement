@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Server, Plus, Trash2, RefreshCw, QrCode, Check, X, Activity, MessageSquare, Settings, CheckCircle, AlertCircle } from 'lucide-react';
 import {ahwService,ahwServer,ahwSession } from '../utils/wahaService';
 
-export constahwDashboard: React.FC = () => {
+export const ahwDashboard: React.FC = () => {
   const [servers, setServers] = useState<WAHAServer[]>([]);
   const [sessions, setSessions] = useState<{ [serverId: string]:ahwSession[] }>({});
   const [loading, setLoading] = useState(true);

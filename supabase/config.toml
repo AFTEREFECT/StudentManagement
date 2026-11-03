@@ -1,0 +1,31 @@
+
+[functions.validate-code]
+enabled = true
+verify_jwt = true
+import_map = "./functions/validate-code/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/validate-code/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/validate-code/*.html" ]
+
+[functions.claim-student]
+enabled = true
+verify_jwt = true
+import_map = "./functions/claim-student/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/claim-student/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/claim-student/*.html" ]
+[functions.attendance-redeem-invite]
+enabled = true
+verify_jwt = false
+[functions.attendance-test-admin-bootstrap]
+enabled = true
+verify_jwt = false
+[functions.attendance-change-test-admin-password]
+enabled = true
+verify_jwt = true

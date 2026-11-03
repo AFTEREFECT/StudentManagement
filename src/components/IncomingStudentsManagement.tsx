@@ -23,32 +23,11 @@ import {
   X,
   FolderOpen
 } from 'lucide-react';
-import { incomingStudentsDB } from '../utils/incomingStudentsDatabase';
+import { incomingStudentsDB, IncomingStudent, IncomingFileRequestDetails } from '../utils/incomingStudentsDatabase';
 import IncomingStudentImport from './IncomingStudentImport';
 import IncomingStudentRequestForm from './IncomingStudentRequestForm';
 import IncomingStudentForm from './IncomingStudentForm';
 import * as XLSX from 'xlsx';
-
-interface IncomingStudent {
-  id: string;
-  nationalId: string;
-  firstName: string;
-  lastName: string;
-  gender: 'ذكر' | 'أنثى';
-  dateOfBirth: string;
-  birthPlace: string;
-  level: string;
-  section: string;
-  previousInstitution: string;
-  enrollmentDate: string;
-  fileStatus: 'لم يتم الإرسال' | 'طلب مرسل' | 'ملف تم التوصل به' | 'مكرر' | 'غير معروف';
-  requestCount: number;
-  requestDates: string[];
-  lastRequestDate?: string;
-  notes: string;
-  createdAt: string;
-  updatedAt: string;
-}
 
 interface IncomingStudentStats {
   totalStudents: number;
@@ -112,7 +91,7 @@ const IncomingStudentsManagement: React.FC = () => {
       filtered = filtered.filter(student =>
         student.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
         student.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        student.nationalId.toLowerCase().includes(searchTerm.toLowerCase())
+        (student.linkedNationalId || student.studentId).toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
 
@@ -181,10 +160,10 @@ const IncomingStudentsManagement: React.FC = () => {
   };
 
   // إرسال طلب ملف
-  const sendFileRequest = async (studentIds: string[]) => {
+  const sendFileRequest = async (studentIds: string[], details: IncomingFileRequestDetails) => {
     try {
       for (const studentId of studentIds) {
-        await incomingStudentsDB.addFileRequest(studentId);
+        await incomingStudentsDB.addFileRequest(studentId, details);
       }
       await loadData();
       setSelectedStudents(new Set());
@@ -265,15 +244,13 @@ const IncomingStudentsManagement: React.FC = () => {
   const exportData = () => {
     const dataToExport = filteredStudents.map((student, index) => ({
       'رت': index + 1,
-      'الرقم الوطني': student.nationalId,
+      'رقم التلميذ': student.studentId,
       'الاسم الكامل': `${student.firstName} ${student.lastName}`,
-      'النوع': student.gender,
-      'تاريخ الميلاد': student.dateOfBirth,
-      'مكان الميلاد': student.birthPlace,
+      'الجنس': student.linkedGender || 'غير محدد',
       'المستوى': student.level,
-      'القسم': student.section,
-      'المؤسسة السابقة': student.previousInstitution,
-      'تاريخ الالتحاق': student.enrollmentDate,
+      'القسم': student.linkedSection || '',
+      'المؤسسة السابقة': student.originalInstitution,
+      'تاريخ التحويل': student.transferDate,
       'وضعية الملف': student.fileStatus,
       'عدد المراسلات': student.requestCount,
       'آخر تاريخ إرسال': student.lastRequestDate || '',
@@ -325,20 +302,37 @@ const IncomingStudentsManagement: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
-      <div className="p-6 max-w-7xl mx-auto">
+    <div className="min-h-screen bg-slate-50">
+      <div className="p-5 md:p-8 max-w-[1500px] mx-auto space-y-6">
         {/* عنوان الصفحة */}
-        <div className="mb-8 text-center">
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent mb-3">
-            تدبير حركية التلاميذ الوافدين
-          </h1>
-          <p className="text-gray-600 text-lg">نظام شامل لإدارة التلاميذ الوافدين مع تتبع الملفات والمراسلات</p>
-          <div className="mt-4 w-24 h-1 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full mx-auto"></div>
+        <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-6 md:p-7">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-5">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-700 flex items-center justify-center">
+                <Users className="w-7 h-7" />
+              </div>
+              <div>
+                <p className="text-sm text-blue-700 font-semibold mb-1">حركية التلاميذ</p>
+                <h1 className="text-2xl md:text-3xl font-bold text-slate-900">تدبير التلاميذ الوافدين</h1>
+                <p className="text-sm text-slate-500 mt-1">متابعة اللوائح والملفات المدرسية والمراسلات</p>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <div className="rounded-xl bg-slate-50 border border-slate-200 px-5 py-3 min-w-28">
+                <span className="block text-xs text-slate-500">إجمالي الوافدين</span>
+                <strong className="block text-2xl text-slate-900 mt-1">{stats.totalStudents}</strong>
+              </div>
+              <div className="rounded-xl bg-amber-50 border border-amber-100 px-5 py-3 min-w-28">
+                <span className="block text-xs text-amber-800">ملفات قيد المتابعة</span>
+                <strong className="block text-2xl text-amber-900 mt-1">{stats.pendingFiles}</strong>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* الإحصائيات الرئيسية */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+          <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
             <div className="flex items-center gap-3 mb-2">
               <Users className="w-5 h-5 text-blue-600" />
               <span className="text-sm font-medium text-gray-700">إجمالي الوافدين</span>
@@ -347,7 +341,7 @@ const IncomingStudentsManagement: React.FC = () => {
             <p className="text-xs text-gray-500 mt-1">تلميذ وافد</p>
           </div>
           
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+          <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
             <div className="flex items-center gap-3 mb-2">
               <Send className="w-5 h-5 text-green-600" />
               <span className="text-sm font-medium text-gray-700">طلبات مرسلة</span>
@@ -358,7 +352,7 @@ const IncomingStudentsManagement: React.FC = () => {
             </p>
           </div>
           
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+          <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
             <div className="flex items-center gap-3 mb-2">
               <FileCheck className="w-5 h-5 text-purple-600" />
               <span className="text-sm font-medium text-gray-700">ملفات متوصل بها</span>
@@ -369,7 +363,7 @@ const IncomingStudentsManagement: React.FC = () => {
             </p>
           </div>
           
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+          <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
             <div className="flex items-center gap-3 mb-2">
               <Clock className="w-5 h-5 text-orange-600" />
               <span className="text-sm font-medium text-gray-700">ملفات متبقية</span>
@@ -380,37 +374,30 @@ const IncomingStudentsManagement: React.FC = () => {
         </div>
 
         {/* قائمة الأقسام */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+        <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
            {[
-            { id: 'management', label: 'إدارة الوافدين', icon: Users, color: 'purple' },
-           { id: 'import', label: 'استيراد الوافدين', icon: Upload, color: 'green' },
-            { id: 'overview', label: 'نظرة عامة', icon: BarChart3, color: 'blue' }
-       
-         
+            { id: 'management', label: 'قائمة الوافدين', icon: Users, color: 'blue' },
+            { id: 'import', label: 'استيراد اللائحة', icon: Upload, color: 'emerald' },
+            { id: 'overview', label: 'الإحصائيات', icon: BarChart3, color: 'violet' }
           ].map((tab) => {
             const IconComponent = tab.icon;
+            const activeColor = {
+              blue: 'bg-blue-700 text-white shadow-sm',
+              emerald: 'bg-emerald-700 text-white shadow-sm',
+              violet: 'bg-violet-700 text-white shadow-sm'
+            }[tab.color];
             return (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`p-4 rounded-xl text-center transition-all duration-200 ${
+                className={`flex items-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors ${
                   activeTab === tab.id
-                    ? `bg-${tab.color}-600 text-white shadow-lg transform scale-105`
-                    : `bg-white text-gray-700 hover:bg-${tab.color}-50 shadow-sm hover:shadow-md border border-gray-100`
+                    ? activeColor
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                 }`}
               >
-                <div className={`w-12 h-12 rounded-lg flex items-center justify-center mx-auto mb-3 ${
-                  activeTab === tab.id 
-                    ? 'bg-white bg-opacity-20' 
-                    : `bg-${tab.color}-100`
-                }`}>
-                  <IconComponent className={`w-6 h-6 ${
-                    activeTab === tab.id 
-                      ? 'text-white' 
-                      : `text-${tab.color}-600`
-                  }`} />
-                </div>
-                <h3 className="font-semibold text-sm">{tab.label}</h3>
+                <IconComponent className="w-4 h-4" />
+                <span>{tab.label}</span>
               </button>
             );
           })}
@@ -639,7 +626,7 @@ const IncomingStudentsManagement: React.FC = () => {
                               <div className="text-sm font-medium text-gray-900">
                                 {student.firstName} {student.lastName}
                               </div>
-                              <div className="text-xs text-gray-500">{student.nationalId}</div>
+                              <div className="text-xs text-gray-500">{student.linkedNationalId || student.studentId}</div>
                               {student.isLinked && (
                                 <div className="text-xs text-green-600 flex items-center gap-1">
                                   <CheckCircle className="w-3 h-3" />
@@ -701,7 +688,10 @@ const IncomingStudentsManagement: React.FC = () => {
                               </button>
                               
                               <button
-                                onClick={() => setShowRequestForm(true)}
+                                onClick={() => {
+                                  setSelectedStudents(new Set([student.id]));
+                                  setShowRequestForm(true);
+                                }}
                                 className="p-1 text-green-600 hover:bg-green-50 rounded transition-colors duration-200"
                                 title="طلب ملف"
                               >
@@ -756,9 +746,12 @@ const IncomingStudentsManagement: React.FC = () => {
         {/* نموذج طلب الملفات */}
         {showRequestForm && (
           <IncomingStudentRequestForm
-            students={filteredStudents.filter(s => selectedStudents.has(s.id))}
-            onRequestSent={async () => {
-              await sendFileRequest(Array.from(selectedStudents));
+            students={students.filter(s => selectedStudents.has(s.id))}
+            onRequestSent={async (details) => {
+              await sendFileRequest(
+                students.filter(s => selectedStudents.has(s.id)).map(student => student.id),
+                details
+              );
               setShowRequestForm(false);
             }}
             onCancel={() => setShowRequestForm(false)}

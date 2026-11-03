@@ -3,6 +3,8 @@ import { Download, Upload, Database, Trash2, AlertTriangle, CheckCircle, FileSpr
 import { dbManager } from '../utils/database';
 import ImportSettings from './ExcelImportSettings';
 import LogoManagement from './LogoManagement';
+import { syncPhoneUpdates } from "../utils/phoneSync";
+
 
 const Settings: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -51,6 +53,9 @@ const Settings: React.FC = () => {
     loadAcademicYears();
   }, []);
 
+
+
+  
   // تصدير قاعدة البيانات
   const handleExportDatabase = async () => {
     try {
@@ -60,7 +65,7 @@ const Settings: React.FC = () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `نسخة_احتياطية_${new Date().toISOString().split('T')[0]}.db`;
+      a.download = `PROGTALAMID-Backup-${new Date().toISOString().split('T')[0]}.sqlite`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -79,6 +84,11 @@ const Settings: React.FC = () => {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    if (!confirm('سيتم استبدال البيانات الحالية ببيانات النسخة الاحتياطية. هل تريد المتابعة؟')) {
+      event.target.value = '';
+      return;
+    }
+
     try {
       setLoading(true);
       const arrayBuffer = await file.arrayBuffer();
@@ -92,6 +102,7 @@ const Settings: React.FC = () => {
       showMessage('خطأ في استيراد قاعدة البيانات', 'error');
     } finally {
       setLoading(false);
+      event.target.value = '';
     }
   };
 
@@ -286,7 +297,17 @@ const Settings: React.FC = () => {
 
       {/* محتوى الإعدادات */}
       {activeSection === 'database' && (
-        <div>
+ 
+       
+          <div className="mb-4">
+      <button
+        onClick={syncPhoneUpdates}
+        className="bg-green-600 text-white px-4 py-2 rounded"
+      >
+        مزامنة أرقام الهواتف
+      </button>
+   
+          
           {/* إدارة قاعدة البيانات */}
           <div className="bg-white rounded-xl p-6 shadow-sm mb-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
@@ -322,7 +343,7 @@ const Settings: React.FC = () => {
                   {loading ? 'جاري الاستيراد...' : 'استيراد قاعدة البيانات'}
                   <input
                     type="file"
-                    accept=".db"
+                    accept=".db,.sqlite,.sqlite3"
                     onChange={handleImportDatabase}
                     disabled={loading}
                     className="hidden"
@@ -365,7 +386,9 @@ const Settings: React.FC = () => {
               
               <div className="p-4 bg-gray-50 rounded-lg">
                 <h3 className="font-medium text-gray-900 mb-2">موقع التخزين</h3>
-                <p className="text-sm text-gray-600">التخزين المحلي للمتصفح</p>
+                <p className="text-sm text-gray-600">
+                  {window.desktopStorage ? 'ملف SQLite في بيانات التطبيق' : 'التخزين المحلي للمتصفح'}
+                </p>
               </div>
               
               <div className="p-4 bg-gray-50 rounded-lg">

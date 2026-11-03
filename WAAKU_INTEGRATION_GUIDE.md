@@ -13,7 +13,7 @@
 
 ## معلومات خادم Waaku
 
-**عنوان الخادم**: `https://progtalamid.ddns.net`
+**عنوان الخادم**: `https://bga.progtalamid.com`
 **مفتاح API**: `52a1b533ba17478798a3f2df37de2ad7` (محمي في Edge Functions)
 **حالة الأمان**: ✅ المفتاح مخزن بشكل آمن في Edge Functions فقط
 
@@ -293,7 +293,7 @@ waakuService.ts / unifiedWhatsAppService.ts
     ↓
 Supabase Edge Functions (Node.js/Deno)
     ↓
-Waaku Server (https://progtalamid.ddns.net)
+Waaku Server (https://bga.progtalamid.com)
     ↓
 WhatsApp Business API
 ```
@@ -332,7 +332,7 @@ SUPABASE_ANON_KEY
 
 ثوابت في الكود (Edge Functions فقط):
 ```typescript
-const WAAKU_SERVER_URL = "https://progtalamid.ddns.net";
+const WAAKU_SERVER_URL = "https://bga.progtalamid.com";
 const WAAKU_API_KEY = "52a1b533ba17478798a3f2df37de2ad7";
 ```
 

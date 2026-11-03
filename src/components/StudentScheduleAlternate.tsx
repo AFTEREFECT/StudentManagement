@@ -51,16 +51,22 @@ export const StudentScheduleAlternate: React.FC<StudentScheduleAlternateProps> =
           const entry = data.find(d => d.time_slot === slot);
           return {
             label: slot,
-            start: entry?.start_time || '00:00',
-            end: entry?.end_time || '00:00',
+            start: entry?.start_time || '',
+            end: entry?.end_time || '',
             time_slot: slot
           };
         }).sort((a, b) => {
-          const timeA = a.start.split(':').map(Number);
-          const timeB = b.start.split(':').map(Number);
-          const minutesA = timeA[0] * 60 + timeA[1];
-          const minutesB = timeB[0] * 60 + timeB[1];
-          return minutesA - minutesB;
+          if (a.start && b.start) {
+            const timeA = a.start.split(':').map(Number);
+            const timeB = b.start.split(':').map(Number);
+            const minutesA = timeA[0] * 60 + timeA[1];
+            const minutesB = timeB[0] * 60 + timeB[1];
+            if (minutesA !== minutesB) return minutesA - minutesB;
+          }
+          const hourA = Number(a.label.match(/H(\d+)/i)?.[1] || 0);
+          const hourB = Number(b.label.match(/H(\d+)/i)?.[1] || 0);
+          if (hourA !== hourB) return hourA - hourB;
+          return Number(a.label.includes('مساء')) - Number(b.label.includes('مساء'));
         });
 
         setPeriods(periodsData);
@@ -136,9 +142,11 @@ export const StudentScheduleAlternate: React.FC<StudentScheduleAlternateProps> =
               {periods.map(period => (
                 <th key={period.label} className="border border-gray-300 px-3 py-2 text-center font-bold text-sm">
                   <div>{period.label}</div>
-                  <div className="text-xs text-gray-600 font-normal mt-1">
-                    {period.start} - {period.end}
-                  </div>
+                  {period.start && period.end && (
+                    <div className="text-xs text-gray-600 font-normal mt-1">
+                      {period.start} - {period.end}
+                    </div>
+                  )}
                 </th>
               ))}
             </tr>

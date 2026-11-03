@@ -58,7 +58,7 @@ export function createStudentListTemplate(): XLSX.WorkBook {
 export async function ensureTemplateExists(): Promise<void> {
   try {
     // محاولة تحميل الملف
-    const response = await fetch('/ListeEleves.xlsx');
+    const response = await fetch('./ListeEleves.xlsx');
     if (!response.ok) {
       throw new Error('Template not found');
     }

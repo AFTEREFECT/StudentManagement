@@ -1,13 +1,52 @@
 {
   "name": "student-management-system",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.4",
   "type": "module",
+  "main": "electron/electron.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:teacher": "vite build --config vite.teacher.config.ts",
+    "test:local-admin-auth": "node scripts/test-local-admin-auth.mjs",
+    "test:attendance-startup": "node scripts/test-attendance-startup.mjs",
+    "test:teacher-pwa": "node scripts/test-teacher-pwa.mjs",
+    "check:teacher": "tsc --noEmit -p tsconfig.teacher.json",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron": "wait-on tcp:8580 && cross-env NODE_ENV=development electron .",
+    "electron:dev": "concurrently -k \"cross-env BROWSER=none npm run dev\" \"npm run electron\"",
+    "build:electron": "node scripts/bump-desktop-version.cjs && npm run build && node scripts/prepare-desktop.cjs && electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.studentmanagement.app",
+    "productName": "progTalamid",
+    "artifactName": "progTalamid-Setup-${version}.${ext}",
+    "directories": {
+      "output": "release-progtalamid-final"
+    },
+    "files": [
+      "dist-desktop/**/*",
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "public/progtalamid.ico",
+        "to": "progtalamid.ico"
+      }
+    ],
+    "win": {
+      "icon": "public/progtalamid.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "progTalamid",
+      "deleteAppDataOnUninstall": false
+    }
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.81.1",
@@ -18,20 +57,29 @@
     "lucide-react": "^0.344.0",
     "qrcode": "^1.5.4",
     "qrcode-reader": "^1.0.4",
+    "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-qr-code": "^2.0.18",
     "recharts": "^3.1.2",
     "sql.js": "^1.8.0",
     "tesseract.js": "^6.0.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "fake-indexeddb": "^6.2.6",
+    "react-test-renderer": "^18.3.1",
     "@eslint/js": "^9.9.1",
-    "@types/qrcode": "^1.5.5",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.18",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^40.0.0",
+    "electron-builder": "^26.4.0",
     "eslint": "^9.9.1",
     "eslint-plugin-react-hooks": "^5.1.0-rc.0",
     "eslint-plugin-react-refresh": "^0.4.11",
@@ -40,6 +88,19 @@
     "tailwindcss": "^3.4.1",
     "typescript": "^5.5.3",
     "typescript-eslint": "^8.3.0",
-    "vite": "^5.4.2"
-  }
+    "vite": "^5.4.2",
+    "wait-on": "^9.0.3"
+  },
+  "description": "نظام شامل لإدارة التلاميذ والمستويات والأقسام مع إمكانيات متقدمة للاستيراد والتصدير والتحليل.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AFTEREFECT/StudentManagement.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/AFTEREFECT/StudentManagement/issues"
+  },
+  "homepage": "https://github.com/AFTEREFECT/StudentManagement#readme"
 }

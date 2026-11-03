@@ -10,6 +10,10 @@ import ProgressBar from './ProgressBar';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import { syncPhoneUpdates } from "../utils/phoneSync";
+import { generateActivationCodes } from "../utils/activationCodes";
+import { linkInstitutionByGreza } from "../utils/institutionLink";
+ 
 
 const StudentManagement: React.FC = () => {
   const [students, setStudents] = useState<Student[]>([]);
@@ -333,6 +337,24 @@ const StudentManagement: React.FC = () => {
     }
   };
 
+ const [grezaInput, setGrezaInput] = useState("");
+ async function connectInstitution() {
+
+  if (!grezaInput) {
+    alert("أدخل GREZA للمؤسسة");
+    return;
+  }
+
+  const result = await linkInstitutionByGreza(grezaInput);
+
+  if (result.success) {
+    alert("تم ربط المؤسسة بنجاح");
+    window.location.reload();
+  } else {
+    alert(result.message);
+  }
+}
+  
   // تصدير ملف Excel
   const handleExportExcel = () => {
     ExcelExporter.exportStudents(filteredStudents);
@@ -1742,6 +1764,21 @@ ${pages.map((pageStudents, pageIndex) => generatePage(pageStudents, pageIndex + 
             <span>توزيع النوع في النتائج</span>
             <span>{searchStats.total} تلميذ</span>
           </div>
+          <div style={{marginBottom:"15px"}}>
+
+ 
+
+ 
+</div>
+
+ 
+
+
+<div className="flex gap-2 mb-4">
+
+ 
+
+</div>
          
 <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
   <div className="h-full flex">

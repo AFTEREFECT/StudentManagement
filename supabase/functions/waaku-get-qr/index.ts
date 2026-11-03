@@ -3,46 +3,85 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, x-client-info",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const WAAKU_SERVER_URL = Deno.env.get("WA_SERVER_URL")!;
-const WAAKU_API_KEY = Deno.env.get("WA_MASTER_API_KEY")!;
+const WAAPI_BASE_URL = "https://waapi.progtalamid.com";
+const WAAPI_KEY = "my-secret-key";
 
-Deno.serve(async (req) => {
+function jsonResponse(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response("ok", { status: 200, headers: corsHeaders });
+  }
+
+  if (req.method !== "POST") {
+    return jsonResponse({ success: false, error: "Method Not Allowed" }, 405);
   }
 
   try {
-    const { sessionId } = await req.json();
-    if (!sessionId) throw new Error("sessionId is required");
+    const body = await req.json().catch(() => ({}));
+    const sessionId = String(
+      body?.instanceName || body?.sessionId || body?.institutionId || body?.id || ""
+    ).trim();
 
-    console.log(`🔍 Fetching QR for session: ${sessionId}`);
-
-    const response = await fetch(`${WAAKU_SERVER_URL}/api/sessions/${sessionId}/qr`, {
-      headers: { 'X-Api-Key': WAAKU_API_KEY },
-    });
-
-    if (!response.ok) {
-      const txt = await response.text().catch(() => '');
-      console.error(`❌ QR fetch failed: ${response.status} ${txt}`);
-      throw new Error(`Failed to get QR from Waaku: ${response.status} ${txt}`);
+    if (!sessionId) {
+      return jsonResponse({ success: false, qr: null, error: "sessionId required" }, 400);
     }
 
-    const data = await response.json();
-    console.log("✅ QR fetched successfully");
-    
-    return new Response(JSON.stringify({ qr: data.qr }), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    const response = await fetch(
+      `${WAAPI_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/qr`,
+      {
+        method: "GET",
+        headers: {
+          "x-api-key": WAAPI_KEY,
+        },
+      }
+    );
 
-  } catch (e) {
-    console.error("❌ Error:", e);
-    return new Response(JSON.stringify({ qr: null, error: (e as Error).message }), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    const text = await response.text().catch(() => "");
+    let data: any = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { raw: text };
+    }
+
+    if (!response.ok) {
+      return jsonResponse(
+        {
+          success: false,
+          qr: null,
+          error: data?.error || "QR request failed",
+          upstreamStatus: response.status,
+          details: data,
+        },
+        response.status || 400,
+      );
+    }
+
+    return jsonResponse({
+      success: true,
+      qr: data?.qr || null,
+      source: "waapi.progtalamid.com",
     });
+  } catch (e) {
+    return jsonResponse(
+      {
+        success: false,
+        qr: null,
+        error: e instanceof Error ? e.message : String(e),
+      },
+      500,
+    );
   }
 });

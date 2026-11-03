@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, User, Calendar, Building, FileText } from 'lucide-react';
+import { academies, canonicalAcademy, canonicalDirectorate, directoratesForAcademy } from '../utils/academyDirectory';
 
 interface IncomingStudent {
   id: string;
@@ -90,10 +91,27 @@ const IncomingStudentForm: React.FC<IncomingStudentFormProps> = ({ student, onSa
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
+    setFormData(prev => {
+      const updated = { ...prev, [name]: value };
+      if (name === 'originalAcademy') {
+        const selectedAcademy = canonicalAcademy(value);
+        updated.originalAcademy = selectedAcademy;
+        if (!directoratesForAcademy(selectedAcademy).includes(prev.originalDirectorate)) {
+          updated.originalDirectorate = '';
+        }
+      } else if (name === 'academy') {
+        const selectedAcademy = canonicalAcademy(value);
+        updated.academy = selectedAcademy;
+        if (!directoratesForAcademy(selectedAcademy).includes(prev.directorate)) {
+          updated.directorate = '';
+        }
+      } else if (name === 'originalDirectorate') {
+        updated.originalDirectorate = canonicalDirectorate(value, prev.originalAcademy);
+      } else if (name === 'directorate') {
+        updated.directorate = canonicalDirectorate(value, prev.academy);
+      }
+      return updated;
+    });
   };
 
   return (
@@ -228,14 +246,20 @@ const IncomingStudentForm: React.FC<IncomingStudentFormProps> = ({ student, onSa
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   المديرية الأصلية
                 </label>
-                <input
-                  type="text"
+                <select
                   name="originalDirectorate"
                   value={formData.originalDirectorate}
                   onChange={handleChange}
-                  placeholder="مثال: المديرية الإقليمية للرباط"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+                >
+                  <option value="">اختر المديرية الأصلية</option>
+                  {formData.originalDirectorate && !directoratesForAcademy(formData.originalAcademy).includes(formData.originalDirectorate) && (
+                    <option value={formData.originalDirectorate}>{formData.originalDirectorate}</option>
+                  )}
+                  {directoratesForAcademy(formData.originalAcademy).map(directorate => (
+                    <option key={directorate} value={directorate}>{directorate}</option>
+                  ))}
+                </select>
               </div>
 
               {/* الأكاديمية الأصلية */}
@@ -243,14 +267,18 @@ const IncomingStudentForm: React.FC<IncomingStudentFormProps> = ({ student, onSa
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   الأكاديمية الأصلية
                 </label>
-                <input
-                  type="text"
+                <select
                   name="originalAcademy"
                   value={formData.originalAcademy}
                   onChange={handleChange}
-                  placeholder="مثال: أكاديمية الرباط سلا القنيطرة"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+                >
+                  <option value="">اختر الأكاديمية الأصلية</option>
+                  {formData.originalAcademy && !academies.includes(formData.originalAcademy) && (
+                    <option value={formData.originalAcademy}>{formData.originalAcademy}</option>
+                  )}
+                  {academies.map(academy => <option key={academy} value={academy}>{academy}</option>)}
+                </select>
               </div>
             </div>
           </div>
@@ -283,14 +311,18 @@ const IncomingStudentForm: React.FC<IncomingStudentFormProps> = ({ student, onSa
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   الأكاديمية
                 </label>
-                <input
-                  type="text"
+                <select
                   name="academy"
                   value={formData.academy}
                   onChange={handleChange}
-                  placeholder="مثال: أكاديمية الرباط سلا القنيطرة"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+                >
+                  <option value="">اختر الأكاديمية</option>
+                  {formData.academy && !academies.includes(formData.academy) && (
+                    <option value={formData.academy}>{formData.academy}</option>
+                  )}
+                  {academies.map(academy => <option key={academy} value={academy}>{academy}</option>)}
+                </select>
               </div>
 
               {/* المديرية */}
@@ -298,14 +330,20 @@ const IncomingStudentForm: React.FC<IncomingStudentFormProps> = ({ student, onSa
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   المديرية
                 </label>
-                <input
-                  type="text"
+                <select
                   name="directorate"
                   value={formData.directorate}
                   onChange={handleChange}
-                  placeholder="مثال: المديرية الإقليمية للرباط"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+                >
+                  <option value="">اختر المديرية</option>
+                  {formData.directorate && !directoratesForAcademy(formData.academy).includes(formData.directorate) && (
+                    <option value={formData.directorate}>{formData.directorate}</option>
+                  )}
+                  {directoratesForAcademy(formData.academy).map(directorate => (
+                    <option key={directorate} value={directorate}>{directorate}</option>
+                  ))}
+                </select>
               </div>
 
               {/* المؤسسة الحالية */}

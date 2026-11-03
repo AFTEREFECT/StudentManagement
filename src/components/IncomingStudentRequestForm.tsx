@@ -9,6 +9,18 @@ import { logoManager } from '../utils/logoManager';
 import { correspondenceReminder, ReminderAlert } from '../utils/correspondenceReminder';
 import ServiceManager from '../utils/serviceManager';
 import { dbManager } from '../utils/database';
+import { IncomingFileRequestDetails } from '../utils/incomingStudentsDatabase';
+import { isDirectorateInAcademy, isKnownAcademy } from '../utils/academyDirectory';
+import RequestPrintFontSelector from './RequestPrintFont';
+import {
+  getAcademyRegionName,
+  getRequestPrintFontFamily,
+  getRequestInstitutionNameHTML,
+  getRequestPrintHeaderHTML,
+  loadRequestInstitutionDetails,
+  useRequestPrintFont,
+  useRequestPrintHeader,
+} from '../utils/requestPrintFont';
 
 interface IncomingStudent {
   id: string;
@@ -37,7 +49,7 @@ interface IncomingStudent {
 
 interface IncomingStudentRequestFormProps {
   students: IncomingStudent[];
-  onRequestSent: () => void;
+  onRequestSent: (details: IncomingFileRequestDetails) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -46,8 +58,10 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
   onRequestSent,
   onCancel,
 }) => {
+  const { font: printFont, setFont: setPrintFont } = useRequestPrintFont();
+  const { header: printHeader, setHeader: setPrintHeader } = useRequestPrintHeader();
   const [requestData, setRequestData] = useState({
-    serviceType: 'مصلحة التأطير و تنشيط المؤسسات التعليمية ،و التوجيه',
+    serviceType: ServiceManager.getSelectedServiceName(),
     institutionName: '',
     requestDate: new Date().toISOString().split('T')[0],
     sendingNumber: '',
@@ -83,12 +97,16 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
     checkForSimilarRequests();
     loadInstitutionSettings();
 
-    const uniqueInstitutions = new Set(students.map(s => s.originalInstitution));
-    if (uniqueInstitutions.size === 1 && students.length > 1) {
+    const recipientGroups = new Set(students.map(s =>
+      [s.originalInstitution, s.originalDirectorate, s.originalAcademy]
+        .map(value => value.trim().toLocaleLowerCase())
+        .join('|')
+    ));
+    if (recipientGroups.size === 1 && students.length > 1) {
       setRequestData(prev => ({
         ...prev,
         requestType: 'جماعي',
-        institutionName: Array.from(uniqueInstitutions)[0] || '',
+        institutionName: students[0]?.originalInstitution || '',
         reference: generateReference(),
       }));
     } else {
@@ -103,50 +121,9 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
 
   const loadInstitutionSettings = async () => {
     try {
-      try {
-        const settings = await dbManager.getInstitutionSettings();
-        if (settings && settings.academy) {
-          setInstitutionSettings({
-            academy: settings.academy,
-            directorate: settings.directorate,
-            municipality: settings.municipality,
-            institution: settings.institution,
-          });
-          return;
-        }
-      } catch {
-        // لا توجد إعدادات في قاعدة البيانات
-      }
-      try {
-        const allStudents = await dbManager.getStudents();
-        const studentWithData = allStudents.find(
-          s => s.region || s.province || s.municipality || s.institution
-        );
-        if (studentWithData) {
-          setInstitutionSettings({
-            academy: studentWithData.region || 'الأكاديمية الجهوية للتربية والتكوين',
-            directorate: studentWithData.province || 'المديرية الإقليمية',
-            municipality: studentWithData.municipality || 'الجماعة',
-            institution: studentWithData.institution || 'المؤسسة التعليمية',
-          });
-          return;
-        }
-      } catch {
-        // لا توجد بيانات في التلاميذ
-      }
-      setInstitutionSettings({
-        academy: 'الأكاديمية الجهوية للتربية والتكوين',
-        directorate: 'المديرية الإقليمية',
-        municipality: 'الجماعة',
-        institution: 'المؤسسة التعليمية',
-      });
+      setInstitutionSettings(await loadRequestInstitutionDetails(dbManager));
     } catch (error) {
-      setInstitutionSettings({
-        academy: 'الأكاديمية الجهوية للتربية والتكوين',
-        directorate: 'المديرية الإقليمية',
-        municipality: 'الجماعة',
-        institution: 'المؤسسة التعليمية',
-      });
+      console.error('تعذر تحميل بيانات المؤسسة للوثيقة:', error);
     }
   };
 
@@ -158,6 +135,7 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
       }
       const newService = ServiceManager.addService(newServiceName, newServiceDescription);
       setServices(ServiceManager.getServices());
+      ServiceManager.setSelectedServiceName(newService.name);
       setRequestData(prev => ({ ...prev, serviceType: newService.name }));
       setShowAddServiceModal(false);
       setNewServiceName('');
@@ -181,7 +159,9 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
         setServices(ServiceManager.getServices());
         const deletedService = services.find(s => s.id === serviceToDelete);
         if (deletedService && requestData.serviceType === deletedService.name) {
-          setRequestData(prev => ({ ...prev, serviceType: 'مصلحة الشؤون التربوية' }));
+          const fallbackService = ServiceManager.getServices()[0];
+          ServiceManager.setSelectedServiceName(fallbackService.name);
+          setRequestData(prev => ({ ...prev, serviceType: fallbackService.name }));
         }
         setShowDeleteServiceModal(false);
         setServiceToDelete(null);
@@ -230,50 +210,18 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
   };
 
   const generateRecipientSection = (student: IncomingStudent) => {
-    if (requestData.regionalScope === 'خارج الإقليم') {
-      return `
-        <div style="display: inline-block; border: 3px ; border-radius: 60px; padding:20px 100px; max-width: 600px;">
-          <div style="font-weight: bold; font-size: 14px; text-align: right; margin-bottom: 3px; line-height: 1.6;">
-            إلى السيد مدير ثانوية ${student?.originalInstitution}
-          </div>
-          <div style="font-weight: bold; font-size: 14px; text-align: right; margin-bottom: 3px; line-height: 1.6;">
-            -تحت إشراف السيد(ة) المدير(ة) الإقليمي-
-          </div>
-          <div style="font-weight: bold; font-size: 14px; text-align: right; margin-bottom: 3px; line-height: 1.6;">
-            -${requestData.serviceType || "مصلحة التأطير و تنشيط المؤسسات التعليمية، و التوجيه"}
-          </div>
-          <div style="font-weight: bold; font-size: 14px; text-align: right; margin-bottom: 3px; line-height: 1.6;">
-            -المديرية الإقليمية بـ${student?.originalDirectorate || student?.directorate}
-          </div>
-          <div style="font-weight: bold; font-size: 14px; text-align: right; margin-bottom: 3px; line-height: 1.6;">
-            -تحت إشراف السيد(ة) المدير(ة) الإقليمي
-          </div>
-          <div style="font-weight: bold; font-size: 14px; text-align: right; margin-bottom: 3px; line-height: 1.6;">
-            -المديرية الإقليمية بـ${institutionSettings?.directorate}
-          </div>
-          <div style="font-weight: bold; font-size: 14px; text-align: right; line-height: 1.6;">
-            -بأكاديمية:${student?.originalAcademy || student?.academy}
-          </div>
-        </div>
-      `;
-    } else {
-      return `
-        <div style="display: inline-block; border: 3px solid transparent; border-radius: 60px; padding: 15px 50px; max-width: 650px;">
-          <div style="font-weight: bold; font-size: 14px; text-align: right; margin-bottom: 3px; line-height: 1.6;">
-            إلى السيد مدير ثانوية ${student?.originalInstitution || requestData.institutionName}
-          </div>
-          <div style="font-weight: bold; font-size: 14px; text-align: right; margin-bottom: 3px; line-height: 1.6;">
-            -تحت إشراف السيد(ة) المدير(ة) الإقليمي-
-          </div>
-          <div style="font-weight: bold; font-size: 14px; text-align: right; margin-bottom: 3px; line-height: 1.6;">
-            -${requestData.serviceType || "مصلحة التأطير و تنشيط المؤسسات التعليمية، و التوجيه"}
-          </div>
-          <div style="font-weight: bold; font-size: 14px; text-align: right; line-height: 1.6;">
-            -المديرية الإقليمية بـ${institutionSettings?.directorate}
-          </div>
-        </div>
-      `;
-    }
+    const recipientDirectorate = student.originalDirectorate || student.directorate;
+    const recipientAcademy = getAcademyRegionName(student.originalAcademy || student.academy);
+    return `
+      <div style="font-weight:700;color:#111;line-height:1.8;">
+        <div>إلى السيد(ة):</div>
+        <div>مدير(ة) ${student.originalInstitution || requestData.institutionName || 'المؤسسة الأصلية'}</div>
+        <div>تحت إشراف السيد(ة) المدير(ة) الإقليمي(ة) لمديرية:</div>
+        <div>${recipientDirectorate}</div>
+        <div>وتحت إشراف السيد(ة) مدير(ة) الأكاديمية الجهوية للتربية والتكوين لجهة:</div>
+        <div>${recipientAcademy}</div>
+      </div>
+    `;
   };
 
   const generateRequestHTML = (
@@ -282,70 +230,79 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
     isMultiple: boolean = false
   ) => {
     const logoHTML = logoManager.getLogoHTML();
+    const requestedStudents = isMultiple ? students : [student];
+    const formattedDate = requestData.requestDate
+      ? new Intl.DateTimeFormat('ar-MA', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      }).format(new Date(`${requestData.requestDate}T00:00:00`))
+      : '';
     return `
-      <div style="font-family: 'Cairo', Arial, sans-serif; direction: rtl; padding: 4mm; line-height: 1.7; background: white; color: #000;">
-        <div style="text-align: center; margin-bottom: 4mm; border-bottom: 1.5px solid #1e40af; padding-bottom: 2mm;">
-          ${logoHTML}
-          <div style="font-size: 16px; font-weight: bold; color: #1e40af; margin: 2mm 0;">
-            المديرية الإقليمية بـ ${institutionSettings.directorate}
+      <div style="box-sizing:border-box;width:190mm;min-height:277mm;margin:0 auto;padding:10mm 12mm;background:#fff;color:#111;direction:rtl;font-family:${getRequestPrintFontFamily(printFont)};font-size:13px;line-height:1.7;">
+        ${getRequestPrintHeaderHTML(printHeader, logoHTML)}
+        ${getRequestInstitutionNameHTML(institutionSettings.institution)}
+
+        <div style="display:flex;direction:ltr;justify-content:space-between;align-items:flex-start;gap:10mm;min-height:42mm;margin:0 0 2mm;">
+          <div style="flex:1;padding-top:1mm;text-align:left;font-weight:700;white-space:nowrap;direction:rtl;">
+            ${institutionSettings.municipality ? `${institutionSettings.municipality} في ` : ''}${formattedDate}
           </div>
-          <div style="font-size: 16px; color: #1e40af; margin: 2mm 0;">
-            ${institutionSettings.institution}
-          </div>
-        </div>
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px;">
-          <div style="font-weight: bold; font-size: 14px;">من مدير المؤسسة</div>
-          <div style="font-weight: bold; font-size: 14px;">
-            ${requestData.requestDate ? `تاريخ: ${new Date(requestData.requestDate).toLocaleDateString('fr-MA')}` : ''}
-          </div>
-        </div>
-        <div style="margin: 18px 0 12px 0; display: flex; flex-direction: column; align-items: center;">
-          ${generateRecipientSection(student)}
-        </div>
-        <div style="margin: 16px 0 18px 0; width: 100%; max-width: 950px; padding: 11px 28px 7px 28px; text-align: right; font-weight: bold;">
-          <div style="font-size: 14px; color: #222; margin-bottom: 11px; text-align: right;">
-            الموضوع: طلب ملف مدرسي ${isMultiple ? 'للتلاميذ' : 'للتلميذ(ة)'} رقم : ${requestNumber}
-          </div>
-          <div style="display: flex; justify-content: flex-start; align-items: center; gap: 44px; font-size: 14px;">
-            ${requestData.includeSendingNumber && requestData.sendingNumber ? `<span style="color: #1e40af;">رقم الإرسال: ${requestData.sendingNumber}</span>` : ''}
-            ${requestData.includeReference && requestData.reference ? `<span style="color: #1e40af;">المرجع: ${requestData.reference}</span>` : ''}
+          <div style="width:62%;text-align:right;line-height:1.8;direction:rtl;font-weight:600;">
+            <div style="font-weight:700;">من مدير المؤسسة:</div>
+            <div>تحت إشراف السيد(ة) المدير(ة) الإقليمي(ة) بمديرية:</div>
+            <div>${institutionSettings.directorate}</div>
+            <div>مصلحة: ${requestData.serviceType}</div>
+            <div>تحت إشراف السيد(ة) مدير(ة) الأكاديمية الجهوية للتربية والتكوين لجهة: ${getAcademyRegionName(institutionSettings.academy)}</div>
+            <div style="display:flex;justify-content:flex-start;gap:8mm;white-space:nowrap;">
+              ${requestData.includeSendingNumber && requestData.sendingNumber
+                ? `<span>رقم الإرسال: ${requestData.sendingNumber}</span>`
+                : ''}
+              ${requestData.includeReference && requestData.reference
+                ? `<span>المرجع: ${requestData.reference}</span>`
+                : ''}
+            </div>
           </div>
         </div>
 
-        <div style="margin-bottom: 12px; text-align: center; font-size: 14px;">
-          <p style="margin-bottom: 3mm; font-weight: bold;">سلام تام بوجود مولانا الإمام أيده الله،</p>
-          <p style="margin-bottom: 2mm; font-weight: bold;">
+        <div style="box-sizing:border-box;width:70%;margin:0 auto 6mm 0;padding:2.5mm 4mm;border:0.4mm solid #94a3b8;border-radius:1mm;background:#fff;text-align:right;line-height:1.8;">
+          ${generateRecipientSection(student)}
+        </div>
+
+        <div style="margin:0 0 6mm;text-align:right;font-weight:700;">
+          الموضوع: طلب ملف مدرسي ${isMultiple ? 'للتلاميذ' : 'للتلميذ(ة)'} — رقم ${requestNumber}
+        </div>
+
+        <div style="margin:0 0 6mm;text-align:center;">
+          <p style="margin:0 0 5mm;font-weight:700;">سلام تام بوجود مولانا الإمام،</p>
+          <p style="margin:0;text-align:right;text-indent:8mm;">
             وبعد، نرجو منكم التكرم بإرسال ${isMultiple ? 'الملفات المدرسية للتلاميذ' : 'الملف المدرسي للتلميذ(ة)'} المذكور${isMultiple ? 'ين' : ''} أدناه، وذلك لاستكمال إجراءات تسجيل${isMultiple ? 'هم' : 'ه'} بمؤسستنا للموسم الدراسي الحالي.
           </p>
         </div>
-      
-        <div style="margin-bottom: 5mm;">
-     
 
-<table style="width: 100%; border-collapse: collapse; font-size: 13px; border: 2px solid #374151;">
-  <thead>
-    <tr style="background: #e5e7eb;">
-      <th style="border: 1px solid #374151; padding: 7px; text-align: center; font-weight: bold; width: 7%;">الرقم الترتيبي</th>
-      <th style="border: 1px solid #374151; padding: 7px; text-align: center; font-weight: bold; width: 18%;">الرقم الوطني</th>
-      <th style="border: 1px solid #374151; padding: 7px; text-align: center; font-weight: bold; width: 20%;">الاسم الكامل</th>
-      <th style="border: 1px solid #374151; padding: 7px; text-align: center; font-weight: bold; width: 10%;">النوع</th>
-      <th style="border: 1px solid #374151; padding: 7px; text-align: center; font-weight: bold; width: 32%;">المستوى</th>
-      <th style="border: 1px solid #374151; padding: 7px; text-align: center; font-weight: bold; width: 13%;">تاريخ التحويل</th>
-    </tr>
-  </thead>
- 
-
-            
+        <div style="margin:0 0 5mm;text-align:center;font-size:14px;font-weight:700;text-decoration:underline;">
+          لائحة التلاميذ المعنيين
+        </div>
+        <div style="margin-bottom:4mm;padding:0 5mm;">
+          <table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:10px;border:1px solid #a8b6c8;">
+            <thead>
+              <tr style="background:#edf3fb;color:#111;">
+                <th style="border:1px solid #a8b6c8;padding:2mm 1mm;width:7%;">ر.ت</th>
+                <th style="border:1px solid #a8b6c8;padding:2mm 1mm;width:18%;">رقم التلميذ</th>
+                <th style="border:1px solid #a8b6c8;padding:2mm 1mm;width:29%;">الاسم الكامل</th>
+                <th style="border:1px solid #a8b6c8;padding:2mm 1mm;width:10%;">الجنس</th>
+                <th style="border:1px solid #a8b6c8;padding:2mm 1mm;width:21%;">المستوى</th>
+                <th style="border:1px solid #a8b6c8;padding:2mm 1mm;width:15%;">تاريخ التحويل</th>
+              </tr>
+            </thead>
             <tbody>
-              ${students.map((s, index) => `
-                <tr style="${index % 2 === 0 ? 'background: white;' : 'background: #f9fafb;'}">
-                  <td style="border: 1px solid #374151; padding: 2mm; text-align: center; font-weight: bold;">${index + 1}</td>
-       
-                  <td style="border: 1px solid #374151; padding: 2mm; text-align: center; font-weight: bold;">${s.massar || s.studentId || ''}</td>
-                  <td style="border: 1px solid #374151; padding: 2mm; text-align: center; font-weight: bold;">${s.firstName || ''} ${s.lastName || ''}</td>
-                  <td style="border: 1px solid #374151; padding: 2mm; text-align: center; font-weight: bold;">${s.gender === 'male' ? 'ذكر' : 'أنثى'}</td>
-                  <td style="border: 1px solid #374151; padding: 2mm; text-align: center; font-weight: bold;">${s.level || ''}</td>
-                  <td style="border: 1px solid #374151; padding: 2mm; text-align: center; font-weight: bold;">${s.transferDate ? new Date(s.transferDate).toLocaleDateString('fr-MA') : ''}</td>
+              ${requestedStudents.map((s, index) => `
+                <tr style="background:#fff;">
+                  <td style="border:1px solid #a8b6c8;padding:2mm 1mm;text-align:center;">${index + 1}</td>
+                  <td style="border:1px solid #a8b6c8;padding:2mm 1mm;text-align:center;direction:ltr;">${s.linkedNationalId || s.studentId || ''}</td>
+                  <td style="border:1px solid #a8b6c8;padding:2mm 1mm;text-align:right;">${s.firstName || ''} ${s.lastName || ''}</td>
+                  <td style="border:1px solid #a8b6c8;padding:2mm 1mm;text-align:center;">${s.linkedGender || 'غير محدد'}</td>
+                  <td style="border:1px solid #a8b6c8;padding:2mm 1mm;text-align:center;">${s.level || '—'}</td>
+                  <td style="border:1px solid #a8b6c8;padding:2mm 1mm;text-align:center;direction:ltr;">${s.transferDate ? new Date(`${s.transferDate}T00:00:00`).toLocaleDateString('ar-MA') : '—'}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -387,13 +344,9 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
             </div>
           </div>
         ` : ''}
-        <div style="padding: 5mm; display: flex; justify-content: space-between; text-align: center;">
-          <span style="font-size: 11px; text-align: right;  font-weight: bold;">
-            توقيع السيد الحارس العام
-          </span>
-          <span style="font-size: 11px; text-align: left; flex: 1; font-weight: bold;">
-            توقيع السيد(ة) المدير(ة)
-          </span>
+        <div style="display:flex;justify-content:space-between;gap:24px;margin-top:6mm;padding:0 3mm;text-align:center;font-size:10px;font-weight:700;">
+          <span>توقيع السيد(ة) المدير(ة)</span>
+          <span>توقيع السيد الحارس العام</span>
         </div>
       </div>
     `;
@@ -405,29 +358,46 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
       return;
     }
 
+    const recipients = new Set(students.map(student =>
+      [student.originalInstitution, student.originalDirectorate, student.originalAcademy]
+        .map(value => value.trim().toLocaleLowerCase())
+        .join('|')
+    ));
+    if (requestData.requestType === 'جماعي' &&
+        (recipients.size !== 1 || students.some(student =>
+          !student.originalInstitution.trim() ||
+          !student.originalDirectorate.trim() ||
+          !student.originalAcademy.trim()
+        ))) {
+      alert('لا يمكن إنشاء طلب جماعي إلا لتلاميذ لهم المؤسسة والمديرية والأكاديمية الأصلية نفسها. أنشئ طلبات فردية أو حدد مجموعة متجانسة.');
+      return;
+    }
+    if (students.some(student =>
+      isKnownAcademy(student.originalAcademy) &&
+      student.originalDirectorate &&
+      !isDirectorateInAcademy(student.originalDirectorate, student.originalAcademy)
+    )) {
+      alert('توجد مديرية أصلية لا تتبع الأكاديمية المحددة في اللائحة المرجعية. صحّح بيانات التلميذ قبل إنشاء الطلب.');
+      return;
+    }
+
+    if (!requestData.sendingNumber.trim()) {
+      alert('الرجاء إدخال رقم الإرسال');
+      return;
+    }
+
     setGenerating(true);
+    let pdfCreated = false;
 
     try {
       const firstStudent = students[0];
-      correspondenceReminder.saveRequest({
-        studentId: firstStudent.studentId,
-        studentName: `${firstStudent.firstName} ${firstStudent.lastName}`,
-        institutionName: requestData.institutionName || firstStudent.originalInstitution,
-        requestType: requestData.requestType,
-        requestDate: requestData.requestDate,
-        sendingNumber: requestData.sendingNumber,
-        reference: requestData.reference,
-        subject: `طلب ملف مدرسي ${requestData.requestType === 'جماعي' ? 'جماعي' : 'فردي'}`,
-        content: `طلب ملف مدرسي للتلميذ ${firstStudent.firstName} ${firstStudent.lastName}`
-      });
-
       const pdf = new jsPDF('p', 'mm', 'a4');
       let isFirstPage = true;
 
       if (requestData.requestType === 'جماعي' && students.length > 1) {
         const requestNumber = generateRequestNumber();
         const htmlContent = generateRequestHTML(students[0], requestNumber, true);
-        await addPageToPDF(pdf, htmlContent, isFirstPage);
+        await addPageToPDF(pdf, htmlContent);
       } else {
         for (let i = 0; i < students.length; i++) {
           const student = students[i];
@@ -436,7 +406,7 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
           if (!isFirstPage) {
             pdf.addPage();
           }
-          await addPageToPDF(pdf, htmlContent, isFirstPage);
+          await addPageToPDF(pdf, htmlContent);
           isFirstPage = false;
         }
       }
@@ -446,21 +416,48 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
         : `طلبات_ملفات_فردية_${requestData.requestDate}.pdf`;
 
       pdf.save(fileName);
-      onRequestSent();
+      pdfCreated = true;
+      await onRequestSent({
+        requestDate: requestData.requestDate,
+        sendingNumber: requestData.sendingNumber,
+        requestNumber: generateRequestNumber(),
+        reference: requestData.reference,
+        senderAcademy: institutionSettings.academy,
+        senderDirectorate: institutionSettings.directorate,
+        senderInstitution: institutionSettings.institution,
+        recipientDirectorate: firstStudent.originalDirectorate,
+        recipientAcademy: firstStudent.originalAcademy,
+        requestType: requestData.requestType,
+        regionalScope: requestData.regionalScope,
+        notes: requestData.notes
+      });
+      correspondenceReminder.saveRequest({
+        studentId: firstStudent.studentId,
+        studentName: `${firstStudent.firstName} ${firstStudent.lastName}`,
+        institutionName: requestData.institutionName || firstStudent.originalInstitution,
+        requestType: requestData.requestType,
+        requestDate: requestData.requestDate,
+        sendingNumber: requestData.sendingNumber,
+        reference: requestData.reference,
+        subject: `طلب ملف مدرسي ${requestData.requestType === 'جماعي' ? 'جماعي' : 'فردي'}`,
+        content: `تم إنشاء وثيقة طلب ملف مدرسي للتلميذ ${firstStudent.firstName} ${firstStudent.lastName}`
+      });
       alert(
-        `تم توليد ${requestData.requestType === 'جماعي'
+        `تم إنشاء وثيقة ${requestData.requestType === 'جماعي'
           ? 'طلب جماعي واحد'
           : `${students.length} طلب فردي`} بنجاح!`
       );
     } catch (error) {
       console.error('خطأ في توليد PDF:', error);
-      alert('خطأ في توليد ملف PDF');
+      alert(pdfCreated
+        ? `تم إنشاء وثيقة PDF، لكن تعذر حفظ سجل الطلب: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`
+        : `خطأ في توليد ملف PDF: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`);
     } finally {
       setGenerating(false);
     }
   };
 
-  const addPageToPDF = async (pdf: jsPDF, htmlContent: string, isFirstPage: boolean) => {
+  const addPageToPDF = async (pdf: jsPDF, htmlContent: string) => {
     const printElement = document.createElement('div');
     printElement.innerHTML = htmlContent;
     printElement.style.position = 'absolute';
@@ -471,17 +468,32 @@ const IncomingStudentRequestForm: React.FC<IncomingStudentRequestFormProps> = ({
     document.body.appendChild(printElement);
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await document.fonts.ready;
+      await Promise.all(Array.from(printElement.querySelectorAll('img'), image => image.decode()));
       const canvas = await html2canvas(printElement, {
         scale: 2,
         useCORS: true,
         allowTaint: true,
         backgroundColor: '#ffffff',
       });
-      const imgData = canvas.toDataURL('image/png');
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      const pageSliceHeight = Math.floor(canvas.width * pdfHeight / pdfWidth);
+      for (let offsetY = 0; offsetY < canvas.height; offsetY += pageSliceHeight) {
+        const sliceHeight = Math.min(pageSliceHeight, canvas.height - offsetY);
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = canvas.width;
+        pageCanvas.height = sliceHeight;
+        const context = pageCanvas.getContext('2d');
+        if (!context) {
+          throw new Error('تعذر تجهيز صفحة من التقرير للطباعة');
+        }
+        context.drawImage(canvas, 0, offsetY, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
+        if (offsetY > 0) {
+          pdf.addPage();
+        }
+        pdf.addImage(pageCanvas.toDataURL('image/png'), 'PNG', 0, 0, pdfWidth, sliceHeight * pdfWidth / canvas.width);
+      }
     } finally {
       document.body.removeChild(printElement);
     }
@@ -544,6 +556,12 @@ return (
     إعدادات الطلب
   </h3>
   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <RequestPrintFontSelector
+      value={printFont}
+      onChange={setPrintFont}
+      header={printHeader}
+      onHeaderChange={setPrintHeader}
+    />
     {/* نوع الطلب */}
     <div>
       <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -602,7 +620,10 @@ return (
         <select
           className="flex-1 min-w-[120px] max-w-[200px] px-2 py-1 rounded border border-gray-300"
           value={requestData.serviceType}
-          onChange={e => setRequestData({ ...requestData, serviceType: e.target.value })}
+          onChange={e => {
+            ServiceManager.setSelectedServiceName(e.target.value);
+            setRequestData(prev => ({ ...prev, serviceType: e.target.value }));
+          }}
         >
           <option value="">اختر المصلحة</option>
           {services.map(service => (

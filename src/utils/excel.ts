@@ -672,7 +672,7 @@ export class ExcelExporter {
       console.log('✅ تم ترتيب التلاميذ تصاعدياً حسب عمود "رتب"');
 
       // تحميل التمبليت باستخدام ExcelJS
-      const response = await fetch('/ListeEleves.xlsx');
+      const response = await fetch('./ListeEleves.xlsx');
       if (!response.ok) {
         throw new Error('Template not found. Please ensure ListeEleves.xlsx exists in /public folder.');
       }

@@ -36,6 +36,29 @@ export const DEFAULT_SERVICES: Service[] = [
 
 class ServiceManager {
   private static readonly STORAGE_KEY = 'services';
+  private static readonly SELECTED_SERVICE_STORAGE_KEY = 'selectedService';
+
+  static getSelectedServiceName(): string {
+    const services = this.getServices();
+    try {
+      const savedName = localStorage.getItem(this.SELECTED_SERVICE_STORAGE_KEY);
+      if (savedName && services.some(service => service.name === savedName)) {
+        return savedName;
+      }
+    } catch (error) {
+      console.error('خطأ في تحميل المصلحة المحددة:', error);
+    }
+    return DEFAULT_SERVICES[0].name;
+  }
+
+  static setSelectedServiceName(name: string): void {
+    try {
+      localStorage.setItem(this.SELECTED_SERVICE_STORAGE_KEY, name);
+    } catch (error) {
+      console.error('خطأ في حفظ المصلحة المحددة:', error);
+      alert('تعذر حفظ المصلحة المحددة للمراسلات القادمة.');
+    }
+  }
 
   // تحميل جميع المصالح
   static getServices(): Service[] {

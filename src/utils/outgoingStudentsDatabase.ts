@@ -1,5 +1,7 @@
 import * as XLSX from 'xlsx';
 import { dbManager } from './database';
+import { normalizeExcelDate } from './excelDate';
+import { canonicalAcademy, canonicalDirectorate, isDirectorateInAcademy, isKnownAcademy } from './academyDirectory';
 
 // قاعدة بيانات مستقلة تماماً للتلاميذ المغادرين
 // منفصلة بشكل كامل عن قاعدة بيانات التلاميذ الأصليين
@@ -101,18 +103,46 @@ export interface ImportResult {
 class OutgoingStudentsDatabase {
   private readonly STORAGE_KEY = 'outgoingStudentsData';
   private readonly SENDS_KEY = 'outgoingStudentSends';
+  private legacyDataMigrated = false;
+
+  private async migrateLegacyData(): Promise<void> {
+    if (this.legacyDataMigrated) return;
+    await dbManager.initialize();
+
+    const legacyStudentsValue = localStorage.getItem(this.STORAGE_KEY);
+    const legacySendsValue = localStorage.getItem(this.SENDS_KEY);
+    const legacyStudents = legacyStudentsValue ? JSON.parse(legacyStudentsValue) as OutgoingStudent[] : [];
+    const legacySends = legacySendsValue ? JSON.parse(legacySendsValue) as FileSend[] : [];
+    const storedStudents = await dbManager.getLocalMobilityRecords<OutgoingStudent>('outgoing-student');
+    const storedSends = await dbManager.getLocalMobilityRecords<FileSend>('outgoing-send');
+    const students = new Map([...legacyStudents, ...storedStudents].map(student => [student.id, student]));
+    const sends = new Map([...legacySends, ...storedSends].map(send => [send.id, send]));
+
+    if (legacyStudentsValue) {
+      await dbManager.replaceLocalMobilityRecords('outgoing-student', Array.from(students.values()));
+      localStorage.removeItem(this.STORAGE_KEY);
+    }
+    if (legacySendsValue) {
+      await dbManager.replaceLocalMobilityRecords(
+        'outgoing-send',
+        Array.from(sends.values()).map(send => ({ ...send, studentId: send.studentId }))
+      );
+      localStorage.removeItem(this.SENDS_KEY);
+    }
+    this.legacyDataMigrated = true;
+  }
 
   // تحميل جميع التلاميذ المغادرين مع محاولة الربط
   async getAllStudents(): Promise<OutgoingStudent[]> {
     try {
-      const data = localStorage.getItem(this.STORAGE_KEY);
-      const students: OutgoingStudent[] = data ? JSON.parse(data) : [];
+      await this.migrateLegacyData();
+      const students = await dbManager.getLocalMobilityRecords<OutgoingStudent>('outgoing-student');
 
       // محاولة الربط مع القاعدة الرئيسية لاستكمال الجنس
       return await this.linkWithMainDatabase(students);
     } catch (error) {
       console.error('خطأ في تحميل بيانات التلاميذ المغادرين:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -164,7 +194,10 @@ class OutgoingStudentsDatabase {
         return basicData;
       });
 
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(studentsToSave));
+      await dbManager.replaceLocalMobilityRecords(
+        'outgoing-student',
+        studentsToSave.map(student => ({ ...student, studentId: student.studentId }))
+      );
     } catch (error) {
       console.error('خطأ في حفظ بيانات التلاميذ المغادرين:', error);
       throw error;
@@ -282,7 +315,11 @@ class OutgoingStudentsDatabase {
     reference: string,
     administrativeReference: string,
     type: 'فردي' | 'جماعي',
-    notes: string = ''
+    notes: string = '',
+    details: {
+      date: string;
+      regionalScope: 'داخل الإقليم' | 'خارج الإقليم';
+    } = { date: new Date().toISOString(), regionalScope: 'داخل الإقليم' }
   ): Promise<void> {
     try {
       const students = await this.getAllStudents();
@@ -294,11 +331,11 @@ class OutgoingStudentsDatabase {
 
       const correspondence: CorrespondenceRecord = {
         id: crypto.randomUUID(),
-        date: new Date().toISOString(),
+        date: details.date,
         sendingNumber,
         reference,
         administrativeReference,
-        status: 'تم الإرسال',
+        status: 'وثيقة جاهزة للطباعة',
         notes,
         type
       };
@@ -312,7 +349,6 @@ class OutgoingStudentsDatabase {
         sendCount: student.sendCount + 1,
         sendDates: updatedSendDates,
         lastSendDate: correspondence.date,
-        fileStatus: 'تم الإرسال',
         administrativeReference: administrativeReference || student.administrativeReference
       });
 
@@ -329,7 +365,7 @@ class OutgoingStudentsDatabase {
         destinationDirectorate: student.destinationDirectorate,
         destinationAcademy: student.destinationAcademy,
         requestType: type,
-        regionalScope: 'داخل الإقليم',
+        regionalScope: details.regionalScope,
         pdfGenerated: true,
         notes
       });
@@ -344,7 +380,10 @@ class OutgoingStudentsDatabase {
     try {
       const sends = await this.getAllFileSends();
       sends.push(fileSend);
-      localStorage.setItem(this.SENDS_KEY, JSON.stringify(sends));
+      await dbManager.replaceLocalMobilityRecords(
+        'outgoing-send',
+        sends.map(send => ({ ...send, studentId: send.studentId }))
+      );
     } catch (error) {
       console.error('خطأ في حفظ سجل الإرسال:', error);
       throw error;
@@ -354,11 +393,11 @@ class OutgoingStudentsDatabase {
   // تحميل جميع سجلات الإرسال
   async getAllFileSends(): Promise<FileSend[]> {
     try {
-      const data = localStorage.getItem(this.SENDS_KEY);
-      return data ? JSON.parse(data) : [];
+      await this.migrateLegacyData();
+      return await dbManager.getLocalMobilityRecords<FileSend>('outgoing-send');
     } catch (error) {
       console.error('خطأ في تحميل سجلات الإرسال:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -380,7 +419,16 @@ class OutgoingStudentsDatabase {
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
 
       // استخراج البيانات الوصفية من الخلايا المحددة
-      const metadata = this.extractMetadataFromSheet(worksheet);
+      const rawMetadata = this.extractMetadataFromSheet(worksheet);
+      const normalizedAcademy = canonicalAcademy(rawMetadata.academy);
+      const metadata = {
+        ...rawMetadata,
+        academy: normalizedAcademy,
+        directorate: canonicalDirectorate(rawMetadata.directorate, normalizedAcademy)
+      };
+      if (!metadata.academy || !metadata.directorate || !metadata.institution) {
+        throw new Error('تعذر قراءة المؤسسة أو المديرية أو الأكاديمية من ترويسة لائحة المغادرين.');
+      }
 
       const students = await this.getAllStudents();
       const existingStudentIds = new Set(students.map(s => s.studentId));
@@ -391,6 +439,13 @@ class OutgoingStudentsDatabase {
       let unlinkedCount = 0;
       const errors: string[] = [];
       const warnings: string[] = [];
+      if (
+        isKnownAcademy(metadata.academy) &&
+        metadata.directorate &&
+        !isDirectorateInAcademy(metadata.directorate, metadata.academy)
+      ) {
+        warnings.push('بيانات ترويسة المؤسسة لا تطابق علاقة الأكاديمية والمديرية في اللائحة المرجعية.');
+      }
 
       // قراءة البيانات من الصف 11 فما فوق
       const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1:Z1000');
@@ -401,12 +456,14 @@ class OutgoingStudentsDatabase {
           const studentId = this.getCellValue(worksheet, `A${rowIndex + 1}`);        // رقم التلميذ
           const lastName = this.getCellValue(worksheet, `B${rowIndex + 1}`);         // النسب
           const firstName = this.getCellValue(worksheet, `C${rowIndex + 1}`);        // الاسم
-          const transferDate = this.getCellValue(worksheet, `D${rowIndex + 1}`);     // تاريخ التحويل
+          const transferDate = this.getRawCellValue(worksheet, `D${rowIndex + 1}`);  // تاريخ التحويل
           const transferType = this.getCellValue(worksheet, `E${rowIndex + 1}`);     // نوع التحويل
           const originalInstitution = this.getCellValue(worksheet, `F${rowIndex + 1}`); // المؤسسة الأصلية
           const destinationInstitution = this.getCellValue(worksheet, `G${rowIndex + 1}`); // مؤسسة الاستقبال
-          const destinationDirectorate = this.getCellValue(worksheet, `H${rowIndex + 1}`); // المديرية المستقبلة
-          const destinationAcademy = this.getCellValue(worksheet, `I${rowIndex + 1}`);     // الأكاديمية المستقبلة
+          const rawDestinationDirectorate = this.getCellValue(worksheet, `H${rowIndex + 1}`);
+          const rawDestinationAcademy = this.getCellValue(worksheet, `I${rowIndex + 1}`);
+          const destinationAcademy = canonicalAcademy(rawDestinationAcademy);
+          const destinationDirectorate = canonicalDirectorate(rawDestinationDirectorate, destinationAcademy);
 
           // التحقق من البيانات الأساسية
           if (!studentId || !firstName || !lastName) {
@@ -424,15 +481,21 @@ class OutgoingStudentsDatabase {
           }
 
           // إنشاء بيانات التلميذ المغادر
+          const normalizedTransferDate = this.formatDate(transferDate);
+          if (transferDate && !normalizedTransferDate) {
+            errors.push(`صف ${rowIndex + 1}: تاريخ التحويل غير صالح`);
+            continue;
+          }
+
           const outgoingStudentData: Omit<OutgoingStudent, 'id' | 'createdAt' | 'updatedAt' | 'linkedGender' | 'isLinked'> = {
             studentId,
             lastName,
             firstName,
-            transferDate: this.formatDate(transferDate),
+            transferDate: normalizedTransferDate,
             transferType: transferType || 'تحويل عادي',
             originalInstitution: originalInstitution || metadata.institution,
-            originalDirectorate: originalInstitution ? '' : metadata.directorate,
-            originalAcademy: originalInstitution ? '' : metadata.academy,
+            originalDirectorate: metadata.directorate,
+            originalAcademy: metadata.academy,
             destinationInstitution: destinationInstitution || '',
             destinationDirectorate: destinationDirectorate || '',
             destinationAcademy: destinationAcademy || '',
@@ -453,6 +516,19 @@ class OutgoingStudentsDatabase {
             correspondenceHistory: [],
             notes: `مستورد من ${file.name} - صف ${rowIndex + 1}`
           };
+          if (
+            destinationAcademy !== rawDestinationAcademy.trim() ||
+            destinationDirectorate !== rawDestinationDirectorate.trim()
+          ) {
+            warnings.push(`صف ${rowIndex + 1}: تم توحيد اسم أكاديمية أو مديرية الاستقبال وفق اللائحة المرجعية.`);
+          }
+          if (
+            isKnownAcademy(destinationAcademy) &&
+            destinationDirectorate &&
+            !isDirectorateInAcademy(destinationDirectorate, destinationAcademy)
+          ) {
+            warnings.push(`صف ${rowIndex + 1}: مديرية الاستقبال غير موجودة ضمن الأكاديمية المحددة في اللائحة المرجعية.`);
+          }
 
           await this.addStudent(outgoingStudentData);
           existingStudentIds.add(studentId);
@@ -497,13 +573,14 @@ class OutgoingStudentsDatabase {
 
   // استخراج البيانات الوصفية من ورقة العمل
   private extractMetadataFromSheet(worksheet: XLSX.WorkSheet) {
+    const cleanMetadata = (value: string) => value.replace(/^[^:：]+[:：]\s*/, '').trim();
     return {
-      academy: this.getCellValue(worksheet, 'C5').trim(),        // الأكاديمية
-      directorate: this.getCellValue(worksheet, 'C6').trim(),    // المديرية
-      level: this.getCellValue(worksheet, 'C7').trim(),          // المستوى
-      municipality: this.getCellValue(worksheet, 'G5').trim(),   // الجماعة
-      institution: this.getCellValue(worksheet, 'G6').trim(),    // المؤسسة
-      academicYear: this.getCellValue(worksheet, 'G7').trim()    // السنة الدراسية
+      academy: cleanMetadata(this.getCellValue(worksheet, 'C5')),
+      directorate: cleanMetadata(this.getCellValue(worksheet, 'C6')),
+      level: cleanMetadata(this.getCellValue(worksheet, 'C7')),
+      municipality: cleanMetadata(this.getCellValue(worksheet, 'G5')),
+      institution: cleanMetadata(this.getCellValue(worksheet, 'G6')),
+      academicYear: cleanMetadata(this.getCellValue(worksheet, 'G7'))
     };
   }
 
@@ -514,6 +591,10 @@ class OutgoingStudentsDatabase {
       return '';
     }
     return String(cell.v).trim();
+  }
+
+  private getRawCellValue(worksheet: XLSX.WorkSheet, cellAddress: string): unknown {
+    return worksheet[cellAddress]?.v ?? '';
   }
 
   // قراءة ملف Excel
@@ -536,37 +617,15 @@ class OutgoingStudentsDatabase {
 
   // تنسيق التاريخ
   private formatDate(dateValue: any): string {
-    if (!dateValue) return '';
-
-    try {
-      if (typeof dateValue === 'number') {
-        const excelDate = new Date((dateValue - 25569) * 86400 * 1000);
-        return excelDate.toISOString().split('T')[0];
-      }
-
-      if (typeof dateValue === 'string') {
-        const date = new Date(dateValue);
-        if (!isNaN(date.getTime())) {
-          return date.toISOString().split('T')[0];
-        }
-      }
-
-      if (dateValue instanceof Date) {
-        return dateValue.toISOString().split('T')[0];
-      }
-
-      return '';
-    } catch (error) {
-      console.warn('خطأ في تنسيق التاريخ:', dateValue, error);
-      return '';
-    }
+    return normalizeExcelDate(dateValue);
   }
 
   // مسح جميع البيانات
   async clearAllData(): Promise<void> {
     try {
-      localStorage.removeItem(this.STORAGE_KEY);
-      localStorage.removeItem(this.SENDS_KEY);
+      await this.migrateLegacyData();
+      await dbManager.clearLocalMobilityRecords('outgoing-student');
+      await dbManager.clearLocalMobilityRecords('outgoing-send');
     } catch (error) {
       console.error('خطأ في مسح البيانات:', error);
       throw error;
@@ -596,14 +655,18 @@ class OutgoingStudentsDatabase {
   // استيراد البيانات
   async importData(jsonData: string): Promise<void> {
     try {
+      await this.migrateLegacyData();
       const data = JSON.parse(jsonData);
 
       if (data.students && Array.isArray(data.students)) {
-        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data.students));
+        await dbManager.replaceLocalMobilityRecords('outgoing-student', data.students);
       }
 
       if (data.sends && Array.isArray(data.sends)) {
-        localStorage.setItem(this.SENDS_KEY, JSON.stringify(data.sends));
+        await dbManager.replaceLocalMobilityRecords(
+          'outgoing-send',
+          data.sends.map((send: FileSend) => ({ ...send, studentId: send.studentId }))
+        );
       }
     } catch (error) {
       console.error('خطأ في استيراد البيانات:', error);

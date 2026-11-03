@@ -119,6 +119,11 @@ CREATE POLICY desktop_receipts_read ON public.desktop_sync_receipts
     public.desktop_has_role(institution_id,ARRAY['institution_admin','staff']::text[])
   );
 
+-- RLS filters rows; SQL privileges still need to be granted explicitly.
+GRANT SELECT ON public.institutions,public.desktop_memberships,
+  public.desktop_devices,public.desktop_documents,public.desktop_sync_receipts TO authenticated;
+GRANT INSERT ON public.desktop_devices TO authenticated;
+
 -- Even clients with arbitrary SQL/PostgREST access cannot directly update
 -- the pilot documents or change a device from pending to approved.
 REVOKE INSERT,UPDATE,DELETE ON public.institutions FROM anon,authenticated;

@@ -1,6 +1,11 @@
 import React, { useState } from 'react';
 import { Upload, FileText, AlertCircle, CheckCircle, Calendar, Users, Download } from 'lucide-react';
 import { dbManager } from '../utils/database';
+import {
+  mapTeacherAssignmentRows,
+  teacherAssignmentTemplateHeaders,
+  teacherAssignmentTemplateInstructions,
+} from '../utils/teacherAssignmentImport';
 import * as XLSX from 'xlsx';
 
 export const ScheduleImport: React.FC = () => {
@@ -40,52 +45,59 @@ export const ScheduleImport: React.FC = () => {
     }
   };
 
-  const handleExcelCSVImport = async (file: File, type: 'timetable' | 'teachers') => {
-    const reader = new FileReader();
+  const handleExcelCSVImport = (file: File, type: 'timetable' | 'teachers'): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
 
-    reader.onload = async (e) => {
-      try {
-        const data = e.target?.result;
-        const workbook = XLSX.read(data, { type: 'binary' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
+      reader.onload = async (e) => {
+        try {
+          const data = e.target?.result;
+          const workbook = XLSX.read(data, {
+            type: 'array',
+            raw: file.name.toLowerCase().endsWith('.csv'),
+          });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet);
 
-        if (type === 'timetable') {
-          await processTimetableData(jsonData);
-        } else {
-          await processTeacherData(jsonData);
+          if (type === 'timetable') {
+            await processTimetableData(jsonData);
+          } else {
+            await processTeacherData(jsonData);
+          }
+          resolve();
+        } catch (error) {
+          reject(error);
         }
-      } catch (error) {
-        console.error('خطأ في معالجة الملف:', error);
-        setMessage({ type: 'error', text: 'فشل معالجة الملف' });
-      }
-    };
+      };
 
-    reader.readAsBinaryString(file);
-  };
+      reader.onerror = () => reject(reader.error || new Error('تعذرت قراءة الملف'));
+      reader.readAsArrayBuffer(file);
+    });
 
-  const handleJSONImport = async (file: File, type: 'timetable' | 'teachers') => {
-    const reader = new FileReader();
+  const handleJSONImport = (file: File, type: 'timetable' | 'teachers'): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
 
-    reader.onload = async (e) => {
-      try {
-        const jsonText = e.target?.result as string;
-        const data = JSON.parse(jsonText);
+      reader.onload = async (e) => {
+        try {
+          const jsonText = e.target?.result as string;
+          const data = JSON.parse(jsonText);
 
-        if (type === 'timetable') {
-          await processTimetableData(data);
-        } else {
-          await processTeacherData(data);
+          if (type === 'timetable') {
+            await processTimetableData(data);
+          } else {
+            await processTeacherData(data);
+          }
+          resolve();
+        } catch (error) {
+          reject(error);
         }
-      } catch (error) {
-        console.error('خطأ في معالجة JSON:', error);
-        setMessage({ type: 'error', text: 'فشل معالجة ملف JSON' });
-      }
-    };
+      };
 
-    reader.readAsText(file);
-  };
+      reader.onerror = () => reject(reader.error || new Error('تعذرت قراءة ملف JSON'));
+      reader.readAsText(file);
+    });
 
   const processTimetableData = async (data: any[]) => {
     const mappedData = data.map((row: any) => {
@@ -109,28 +121,89 @@ export const ScheduleImport: React.FC = () => {
           tags: row.metadata?.tags || ''
         };
       } else {
+        const columns = Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [
+            key.replace(/^\uFEFF/, '').trim().toLowerCase(),
+            value,
+          ])
+        );
+        const progMawaridClass = String(columns['students sets'] ?? '').trim();
+        const progMawaridDay = String(columns.day ?? '').trim();
+        const progMawaridHour = String(columns.hour ?? '').trim();
+
+        if (progMawaridClass && progMawaridDay && progMawaridHour) {
+          const [sourceDay, sourceSession] = progMawaridDay.toLowerCase().split(/[_-]/);
+          const dayNames: Record<string, string> = {
+            lundi: 'الاثنين',
+            monday: 'الاثنين',
+            mardi: 'الثلاثاء',
+            tuesday: 'الثلاثاء',
+            mercredi: 'الأربعاء',
+            wednesday: 'الأربعاء',
+            jeudi: 'الخميس',
+            thursday: 'الخميس',
+            vendredi: 'الجمعة',
+            friday: 'الجمعة',
+            samedi: 'السبت',
+            saturday: 'السبت',
+            dimanche: 'الأحد',
+            sunday: 'الأحد',
+          };
+          const dayArabic = dayNames[sourceDay] || sourceDay;
+          const session = sourceSession === 'm' || sourceSession === 'morning'
+            ? 'صباحا'
+            : sourceSession === 's' || sourceSession === 'evening'
+              ? 'مساءً'
+              : '';
+          const subjectCode = String(columns.subject ?? '').trim();
+          const teacherId = String(columns.teachers ?? '').trim();
+          const room = String(columns.room ?? '').trim();
+
+          return {
+            teacher_name_arabic: '',
+            teacher_name_french: '',
+            teacher_id: teacherId,
+            ppr: '',
+            subject_code: subjectCode,
+            subject_arabic: subjectCode ? `المادة ${subjectCode}` : '',
+            class: progMawaridClass,
+            room_code: room,
+            room_name: room,
+            day: progMawaridDay,
+            day_arabic: dayArabic,
+            time_slot: session ? `${progMawaridHour} - ${session}` : progMawaridHour,
+            start_time: '',
+            end_time: '',
+            activity_id: String(columns['activity id'] ?? ''),
+            tags: String(columns['activity tags'] ?? ''),
+          };
+        }
+
         return {
-          teacher_name_arabic: row['اسم الأستاذ بالعربية'] || row['nameArabic'] || row['SAIDY KARIMA'] || '',
-          teacher_name_french: row['اسم الأستاذ بالفرنسية'] || row['nameFrench'] || row['كريمة السعيدي'] || '',
-          teacher_id: row['معرف الأستاذ'] || row['teacherId'] || row['JE191632'] || '',
-          ppr: row['رقم التأجير'] || row['ppr'] || row['1545101'] || '',
-          subject_code: row['رمز المادة'] || row['subjectCode'] || row['0011'] || '',
-          subject_arabic: row['المادة بالعربية'] || row['subjectArabic'] || row['اللغة العربية'] || '',
-          class: row['القسم'] || row['class'] || row['3APIC-4'] || '',
-          room_code: row['رمز القاعة'] || row['roomCode'] || row['P-A-102'] || '',
-          room_name: row['اسم القاعة'] || row['roomName'] || row['P-A-102'] || '',
-          day: row['اليوم'] || row['day'] || row['Vendredi_s'] || '',
-          day_arabic: row['اليوم بالعربية'] || row['dayArabic'] || row['الجمعة'] || '',
-          time_slot: row['الفترة الزمنية'] || row['timeSlot'] || row['14:30 - 15:30'] || '',
-          start_time: row['وقت البداية'] || row['startTime'] || row['14:30'] || '',
-          end_time: row['وقت النهاية'] || row['endTime'] || row['15:30'] || '',
-          activity_id: row['معرف النشاط'] || row['activityId'] || row['127'] || '',
-          tags: row['العلامات'] || row['tags'] || ''
+          teacher_name_arabic: columns['اسم الأستاذ بالعربية'] || columns.namearabic || '',
+          teacher_name_french: columns['اسم الأستاذ بالفرنسية'] || columns.namefrench || '',
+          teacher_id: columns['معرف الأستاذ'] || columns.teacherid || '',
+          ppr: columns['رقم التأجير'] || columns.ppr || '',
+          subject_code: columns['رمز المادة'] || columns.subjectcode || '',
+          subject_arabic: columns['المادة بالعربية'] || columns.subjectarabic || '',
+          class: columns['القسم'] || columns.class || '',
+          room_code: columns['رمز القاعة'] || columns.roomcode || '',
+          room_name: columns['اسم القاعة'] || columns.roomname || columns.roomcode || '',
+          day: columns['اليوم'] || columns.day || '',
+          day_arabic: columns['اليوم بالعربية'] || columns.dayarabic || columns['اليوم'] || columns.day || '',
+          time_slot: columns['الفترة الزمنية'] || columns.timeslot || '',
+          start_time: columns['وقت البداية'] || columns.starttime || '',
+          end_time: columns['وقت النهاية'] || columns.endtime || '',
+          activity_id: columns['معرف النشاط'] || columns.activityid || '',
+          tags: columns['العلامات'] || columns.tags || ''
         };
       }
     });
 
     const validData = mappedData.filter(entry => entry.class && entry.day);
+    if (validData.length === 0) {
+      throw new Error('لم يتم العثور على حصص صالحة. تأكد من أن الملف يحتوي على بيانات جداول الحصص من ProgMawarid.');
+    }
 
     console.log('📊 إجمالي الحصص المستوردة:', validData.length);
     console.log('📝 عينة من البيانات:', validData.slice(0, 5));
@@ -145,26 +218,19 @@ export const ScheduleImport: React.FC = () => {
   };
 
   const processTeacherData = async (data: any[]) => {
-    const mappedData = data.map((row: any) => ({
-      teacher_arabic: row['teacherArabic'] || row['اسم الأستاذ بالعربية'] || row['NEZHA  ZRHAIDI'] || '',
-      teacher_french: row['teacherFrench'] || row['اسم الأستاذ بالفرنسية'] || row['نزهة  زغيدي'] || '',
-      teacher_id: row['teacherId'] || row['معرف الأستاذ'] || row['JA39397'] || '',
-      ppr: row['ppr'] || row['رقم التأجير'] || row['1751480'] || '',
-      class: row['class'] || row['القسم'] || row['1APIC-2'] || '',
-      subject_code: row['subjectCode'] || row['رمز المادة'] || row['0013'] || '',
-      subject_arabic: row['subjectArabic'] || row['المادة بالعربية'] || row['اللغة الإنجليزية'] || ''
-    }));
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('الملف لا يحتوي على صفوف بيانات. نزّل نموذج توزيع الأساتذة واملأه ثم أعد المحاولة.');
+    }
+    const { assignments, skippedRows } = mapTeacherAssignmentRows(data);
 
-    const validData = mappedData.filter(entry => entry.class && entry.teacher_id);
+    console.log('📊 إجمالي التوزيعات المستوردة:', assignments.length);
 
-    console.log('📊 إجمالي التوزيعات المستوردة:', validData.length);
-
-    setFullData(validData);
-    setPreviewData(validData.slice(0, 10));
+    setFullData(assignments);
+    setPreviewData(assignments.slice(0, 10));
     setShowPreview(true);
     setMessage({
       type: 'info',
-      text: `تم تحميل ${validData.length} توزيع. معاينة أول 10 سجلات. انقر "تأكيد الاستيراد" للحفظ.`
+      text: `تم تحميل ${assignments.length} توزيع. معاينة أول 10 سجلات.${skippedRows ? ` تم تجاهل ${skippedRows} صفوف لغياب معرف الأستاذ أو القسم.` : ''} انقر "تأكيد الاستيراد" للحفظ.`
     });
   };
 
@@ -244,7 +310,7 @@ export const ScheduleImport: React.FC = () => {
     }
   };
 
-  const downloadTemplate = () => {
+  const downloadTimetableTemplate = () => {
     const timetableTemplate = [
       {
         'اسم الأستاذ بالعربية': 'أحمد محمد',
@@ -270,6 +336,20 @@ export const ScheduleImport: React.FC = () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'نموذج');
     XLSX.writeFile(wb, 'نموذج_جدول_الحصص.xlsx');
+  };
+
+  const downloadTeacherTemplate = () => {
+    const workbook = XLSX.utils.book_new();
+    const distributionSheet = XLSX.utils.aoa_to_sheet([teacherAssignmentTemplateHeaders]);
+    distributionSheet['!cols'] = [
+      { wch: 28 }, { wch: 28 }, { wch: 20 }, { wch: 18 },
+      { wch: 18 }, { wch: 16 }, { wch: 24 },
+    ];
+    const instructionsSheet = XLSX.utils.aoa_to_sheet(teacherAssignmentTemplateInstructions);
+    instructionsSheet['!cols'] = [{ wch: 24 }, { wch: 90 }];
+    XLSX.utils.book_append_sheet(workbook, distributionSheet, 'التوزيع');
+    XLSX.utils.book_append_sheet(workbook, instructionsSheet, 'التعليمات');
+    XLSX.writeFile(workbook, 'نموذج_استيراد_توزيع_الأساتذة.xlsx');
   };
 
   return (
@@ -316,30 +396,15 @@ export const ScheduleImport: React.FC = () => {
             </div>
           )}
 
-          <div className="p-6 border-b border-gray-200 bg-yellow-50">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="w-6 h-6 text-yellow-600 flex-shrink-0 mt-1" />
-              <div>
-                <h3 className="font-bold text-yellow-900 mb-2">ملاحظة هامة</h3>
-                <p className="text-yellow-800">
-                  النظام يعمل بقاعدة بيانات محلية (IndexedDB). جميع البيانات تُحفظ على جهازك فقط ولا يتم إرسالها لأي سيرفر خارجي.
-                </p>
-                <p className="text-yellow-800 mt-2">
-                  قم باستيراد جداول الحصص من برنامج <strong>ProgMawarid</strong> بصيغة CSV أو Excel أو JSON
-                </p>
-              </div>
-            </div>
-          </div>
-
           <div className="p-6 space-y-6">
             <div className="flex gap-4 items-center justify-between">
               <h2 className="text-xl font-bold text-gray-800">اختر نوع الملف للاستيراد</h2>
               <button
-                onClick={downloadTemplate}
+                onClick={downloadTimetableTemplate}
                 className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-gray-300 transition-colors"
               >
                 <Download className="w-5 h-5" />
-                تحميل نموذج Excel
+                تحميل نموذج جدول الحصص
               </button>
             </div>
 
@@ -367,7 +432,16 @@ export const ScheduleImport: React.FC = () => {
               <div className="border-2 border-dashed border-green-300 rounded-lg p-8 text-center hover:border-green-500 transition-colors">
                 <Users className="w-16 h-16 mx-auto text-green-500 mb-4" />
                 <h3 className="text-xl font-bold text-gray-800 mb-2">استيراد توزيع الأساتذة</h3>
-                <p className="text-gray-600 mb-4">رفع ملف توزيع الأساتذة على الأقسام</p>
+                <p className="text-gray-600 mb-4">رفع ملف توزيع الأساتذة على الأقسام. يلزم معرف الأستاذ والقسم في كل صف.</p>
+                <button
+                  type="button"
+                  onClick={downloadTeacherTemplate}
+                  disabled={loading}
+                  className="mb-4 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-bold inline-flex items-center gap-2 hover:bg-gray-300 transition-colors disabled:opacity-50"
+                >
+                  <Download className="w-5 h-5" />
+                  تحميل نموذج توزيع الأساتذة
+                </button>
                 <label className="cursor-pointer inline-block">
                   <input
                     type="file"
@@ -448,18 +522,16 @@ export const ScheduleImport: React.FC = () => {
               </div>
             )}
 
-            <div className="bg-gray-50 rounded-lg p-6 mt-6">
-              <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
+            <details className="bg-gray-50 rounded-lg p-6 mt-6">
+              <summary className="font-bold text-gray-800 cursor-pointer flex items-center gap-2">
                 <FileText className="w-5 h-5" />
-                التنسيق المطلوب لملفات ProgMawarid
-              </h3>
+                تفاصيل الملفات المدعومة
+              </summary>
               <div className="space-y-4">
                 <div>
                   <h4 className="font-bold text-gray-700 mb-2">جداول الحصص (timetable):</h4>
                   <code className="block bg-white p-3 rounded text-sm overflow-x-auto">
-                    اسم الأستاذ بالعربية, اسم الأستاذ بالفرنسية, معرف الأستاذ, رقم التأجير,
-                    رمز المادة, المادة بالعربية, القسم, رمز القاعة, اسم القاعة,
-                    اليوم, اليوم بالعربية, الفترة الزمنية, وقت البداية, وقت النهاية
+                    Activity Id, Day, Hour, Students Sets, Subject, Teachers, Activity Tags, Room
                   </code>
                 </div>
                 <div>
@@ -468,15 +540,17 @@ export const ScheduleImport: React.FC = () => {
                     اسم الأستاذ بالعربية, اسم الأستاذ بالفرنسية, معرف الأستاذ, رقم التأجير,
                     القسم, رمز المادة, المادة بالعربية
                   </code>
+                  <p className="mt-2 text-sm text-gray-600">
+                    يلزم وجود معرف الأستاذ والقسم. يمكن استخدام عناوين القالب العربية أو المقابلة الإنجليزية، ويظهر خطأ يوضح العناوين المطلوبة إذا لم يتعرف البرنامج على الملف.
+                  </p>
                 </div>
                 <div className="bg-blue-50 p-3 rounded">
                   <p className="text-sm text-blue-800">
-                    <strong>ملاحظة:</strong> النظام يدعم تلقائياً الأعمدة بالعربية والفرنسية والإنجليزية.
-                    يمكنك استخدام ملفات JSON بالهيكلة الموضحة في التعليمات.
+                    تُحوّل رموز الأيام والفترات تلقائياً. إذا لم يتضمن الملف أسماء المواد أو الأساتذة وأوقات الحصص، فستظهر الرموز المتاحة دون تخمين بيانات غير موجودة في الملف.
                   </p>
                 </div>
               </div>
-            </div>
+            </details>
           </div>
         </div>
       </div>

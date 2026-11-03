@@ -41,6 +41,7 @@ import { UnifiedWhatsAppSettings } from './components/UnifiedWhatsAppSettings';
 import { WaakuWhatsAppConnection } from './components/WaakuWhatsAppConnection';
 import { WhatsAppCommunication } from './components/WhatsAppCommunication';
 import { AbsenceManagement } from './components/AbsenceManagement';
+import { LessonAttendanceWorkspace } from './components/LessonAttendanceWorkspace';
 import { MessageTemplates } from './components/MessageTemplates';
 import { ScheduleImport } from './components/ScheduleImport';
 import { TimetablePrint } from './components/TimetablePrint';
@@ -319,6 +320,8 @@ function App() {
       case 'timetable-print':
         return <TimetablePrintManager />;
       case 'absence-management':
+        return <LessonAttendanceWorkspace />;
+      case 'absence-management-legacy':
         return <AbsenceManagement />;
       case 'subscription-management':
         return <SubscriptionManagement />;

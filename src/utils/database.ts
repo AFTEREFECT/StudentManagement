@@ -322,8 +322,7 @@ return { id: newId, name: cleanName, code: cleanCode };
       )`,
 
       // إعادة إنشاء جدول سجلات الحضور مع القيود الجديدة
-      `DROP TABLE IF EXISTS attendance_records`,
-      `CREATE TABLE attendance_records (
+      `CREATE TABLE IF NOT EXISTS attendance_records (
         id TEXT PRIMARY KEY,
         studentId TEXT NOT NULL,
         date TEXT NOT NULL,
@@ -333,6 +332,39 @@ return { id: newId, name: cleanName, code: cleanCode };
         notes TEXT,
         createdAt TEXT NOT NULL,
         FOREIGN KEY (studentId) REFERENCES students(id) ON DELETE CASCADE
+      )`,
+
+      // Journal de présence par séance : préserve les données historiques.
+      `CREATE TABLE IF NOT EXISTS lesson_sessions (
+        id TEXT PRIMARY KEY,
+        date TEXT NOT NULL,
+        section TEXT NOT NULL,
+        timetableId TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        teacher TEXT NOT NULL,
+        startTime TEXT NOT NULL,
+        endTime TEXT NOT NULL,
+        period TEXT NOT NULL CHECK(period IN ('صباحية', 'مسائية')),
+        confirmedAt TEXT NOT NULL,
+        UNIQUE(date, section, timetableId)
+      )`,
+      `CREATE TABLE IF NOT EXISTS lesson_absences (
+        sessionId TEXT NOT NULL,
+        studentId TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'غائب' CHECK(status IN ('غائب', 'متأخر')),
+        justified INTEGER NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL DEFAULT '',
+        updatedAt TEXT NOT NULL,
+        PRIMARY KEY (sessionId, studentId),
+        FOREIGN KEY(sessionId) REFERENCES lesson_sessions(id) ON DELETE CASCADE
+      )`,
+      `CREATE TABLE IF NOT EXISTS lesson_attendance_audit (
+        id TEXT PRIMARY KEY,
+        sessionId TEXT NOT NULL,
+        changedAt TEXT NOT NULL,
+        action TEXT NOT NULL,
+        previousAbsences TEXT NOT NULL,
+        newAbsences TEXT NOT NULL
       )`,
 
       // جدول نقط المراقبة المستمرة
@@ -645,6 +677,8 @@ return { id: newId, name: cleanName, code: cleanCode };
       'CREATE INDEX IF NOT EXISTS idx_students_status ON students(status)',
       'CREATE INDEX IF NOT EXISTS idx_attendance_studentId ON attendance_records(studentId)',
       'CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance_records(date)',
+      'CREATE INDEX IF NOT EXISTS idx_lesson_sessions_date_section ON lesson_sessions(date, section)',
+      'CREATE INDEX IF NOT EXISTS idx_lesson_absences_student ON lesson_absences(studentId)',
       'CREATE INDEX IF NOT EXISTS idx_grades_studentId ON grade_records(studentId)',
       'CREATE INDEX IF NOT EXISTS idx_grades_subject ON grade_records(subject)',
       'CREATE INDEX IF NOT EXISTS idx_sections_levelId ON sections(levelId)',
@@ -1984,6 +2018,99 @@ this.db.exec(`
    */
   async deleteStudent(id: string): Promise<void> {
     this.db.run('DELETE FROM students WHERE id = ?', [id]);
+    await this.saveDatabase();
+  }
+
+  // Les sauvegardes de séance sont atomiques et idempotentes.
+  async saveLessonAttendance(input: {
+    date: string; section: string; timetableId: string; subject: string;
+    teacher: string; startTime: string; endTime: string;
+    period: 'صباحية' | 'مسائية'; absentStudentIds: string[];
+  }): Promise<void> {
+    await this.initialize();
+    if (!input.date || !input.section || !input.timetableId ||
+        !/^\\d{2}:\\d{2}$/.test(input.startTime) ||
+        !/^\\d{2}:\\d{2}$/.test(input.endTime) ||
+        input.endTime <= input.startTime) {
+      throw new Error('بيانات الحصة غير صالحة');
+    }
+    const allowed = new Set<string>();
+    const stmt = this.db.prepare('SELECT id FROM students WHERE section = ?');
+    try {
+      stmt.bind([input.section]);
+      while (stmt.step()) allowed.add(String(stmt.getAsObject().id));
+    } finally { stmt.free(); }
+    const ids = [...new Set(input.absentStudentIds)];
+    if (ids.some(id => !allowed.has(id))) throw new Error('تلميذ لا ينتمي إلى القسم المختار');
+    const sessionId = [input.date, input.section, input.timetableId].join('|');
+    const now = new Date().toISOString();
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      const old = this.db.exec('SELECT studentId FROM lesson_absences WHERE sessionId = ?', [sessionId]);
+      const previous = old.length ? old[0].values.map((v: unknown[]) => String(v[0])) : [];
+      this.db.run(`INSERT INTO lesson_sessions
+        (id,date,section,timetableId,subject,teacher,startTime,endTime,period,confirmedAt)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(date,section,timetableId) DO UPDATE SET
+        subject=excluded.subject, teacher=excluded.teacher,
+        startTime=excluded.startTime, endTime=excluded.endTime,
+        period=excluded.period, confirmedAt=excluded.confirmedAt`,
+        [sessionId,input.date,input.section,input.timetableId,input.subject,
+         input.teacher,input.startTime,input.endTime,input.period,now]);
+      this.db.run('DELETE FROM lesson_absences WHERE sessionId = ?', [sessionId]);
+      for (const id of ids) {
+        this.db.run(`INSERT INTO lesson_absences
+          (sessionId, studentId, status, justified, reason, updatedAt)
+          VALUES (?,?, 'غائب',0,'',?)`, [sessionId,id,now]);
+      }
+      this.db.run(`INSERT INTO lesson_attendance_audit
+        (id,sessionId,changedAt,action,previousAbsences,newAbsences)
+        VALUES (?,?,?,?,?,?)`,
+        [crypto.randomUUID(),sessionId,now,previous.length?'update':'confirm',
+         JSON.stringify(previous),JSON.stringify(ids)]);
+      this.db.run('COMMIT');
+    } catch (error) { this.db.run('ROLLBACK'); throw error; }
+    await this.saveDatabase();
+  }
+
+  async getLessonSessions(date?: string, section?: string): Promise<any[]> {
+    await this.initialize();
+    const conditions: string[] = [], params: string[] = [];
+    if (date) { conditions.push('date = ?'); params.push(date); }
+    if (section) { conditions.push('section = ?'); params.push(section); }
+    const query = 'SELECT * FROM lesson_sessions' +
+      (conditions.length ? ' WHERE ' + conditions.join(' AND ') : '') +
+      ' ORDER BY date, startTime';
+    const stmt = this.db.prepare(query);
+    const rows: any[] = [];
+    try {
+      stmt.bind(params);
+      while(stmt.step()) rows.push(stmt.getAsObject());
+    } finally { stmt.free(); }
+    return rows;
+  }
+
+  async getLessonAbsences(studentId?: string): Promise<any[]> {
+    await this.initialize();
+    const sql = `SELECT a.*,s.date,s.section,s.subject,s.teacher,
+      s.startTime,s.endTime,s.period,s.confirmedAt
+      FROM lesson_absences a JOIN lesson_sessions s ON a.sessionId=s.id` +
+      (studentId ? ' WHERE a.studentId = ?' : '') +
+      ' ORDER BY s.date,s.startTime';
+    const stmt = this.db.prepare(sql);
+    const rows: any[] = [];
+    try {
+      if (studentId) stmt.bind([studentId]);
+      while (stmt.step()) rows.push(stmt.getAsObject());
+    } finally { stmt.free(); }
+    return rows;
+  }
+
+  async setLessonAbsenceJustification(sessionId: string, studentId: string,
+    justified: boolean, reason = ''): Promise<void> {
+    await this.initialize();
+    this.db.run('UPDATE lesson_absences SET justified = ?, reason = ?, updatedAt = ? WHERE sessionId = ? AND studentId = ?',
+      [justified ? 1 : 0,reason,new Date().toISOString(),sessionId,studentId]);
     await this.saveDatabase();
   }
 

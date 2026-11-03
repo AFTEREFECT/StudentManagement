@@ -101,7 +101,8 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isDeveloperM
       color: 'from-red-500 to-orange-500',
       items: [
         { id: 'attendance-sheet', label: 'توليد ورقة الغياب', icon: FileSpreadsheet },
-        { id: 'absence-management', label: 'تدبير الغيابات', icon: UserX },
+        { id: 'absence-management', label: 'مسك الحصص وبطاقة الغياب', icon: UserX },
+        { id: 'absence-management-legacy', label: 'مسك الغياب القديم', icon: UserX },
       ]
     },
 

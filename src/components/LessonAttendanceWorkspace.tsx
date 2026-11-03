@@ -121,6 +121,20 @@ export const LessonAttendanceWorkspace: React.FC = () => {
     } finally { setSaving(false); }
   }
 
+  async function changeJustification(absence: Absence) {
+    const next = !absence.justified;
+    const reason = next ? window.prompt('أدخل سبب تبرير الغياب (إلزامي):', '') : '';
+    if (next && (!reason || !reason.trim())) return;
+    if (!next && !window.confirm('هل تريد إلغاء تبرير هذا الغياب؟')) return;
+    try {
+      await dbManager.setLessonAbsenceJustification(absence.sessionId, absence.studentId, next, reason || '');
+      await refresh();
+      setNotice(next ? 'تم توثيق تبرير الغياب.' : 'تم إلغاء التبرير.');
+    } catch (error) {
+      setNotice('تعذر تحديث التبرير: ' + String(error));
+    }
+  }
+
   const startYear = academicYearStart(date);
   function cellFor(day: number, month: number, year: number, period: Period, studentId: string) {
     if (day > new Date(year, month, 0).getDate()) return null;
@@ -260,6 +274,22 @@ export const LessonAttendanceWorkspace: React.FC = () => {
                          item?.state === 'pending' ? 'bg-amber-50 text-amber-700' : '')}>{item?.label || ''}</td>;
                     })}
                   </tr>))}</tbody>
+              </table>
+            </div>
+            <h3 className="font-bold mt-5">تفاصيل الغياب وتبريره</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead><tr className="bg-gray-100"><th className="border p-2">التاريخ</th><th className="border p-2">الساعة</th><th className="border p-2">المدة</th><th className="border p-2">الحالة</th><th className="border p-2 print:hidden">إجراء</th></tr></thead>
+                <tbody>{studentLessons.map(a =>
+                  <tr key={a.sessionId}>
+                    <td className="border p-2">{a.date}</td>
+                    <td className="border p-2">{a.startTime} – {a.endTime}</td>
+                    <td className="border p-2">{readableDuration(minutesOf(a.startTime, a.endTime))}</td>
+                    <td className="border p-2">{a.justified ? 'مبرر' : 'غير مبرر'}</td>
+                    <td className="border p-2 print:hidden"><button type="button" className="text-blue-700 underline" onClick={() => void changeJustification(a)}>{a.justified ? 'إلغاء التبرير' : 'تبرير'}</button></td>
+                  </tr>)}
+                  {studentLessons.length === 0 && <tr><td colSpan={5} className="border p-2 text-center">لا يوجد غياب مسجل</td></tr>}
+                </tbody>
               </table>
             </div>
           </div>}

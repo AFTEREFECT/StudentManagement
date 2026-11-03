@@ -2057,11 +2057,19 @@ this.db.exec(`
         period=excluded.period, confirmedAt=excluded.confirmedAt`,
         [sessionId,input.date,input.section,input.timetableId,input.subject,
          input.teacher,input.startTime,input.endTime,input.period,now]);
-      this.db.run('DELETE FROM lesson_absences WHERE sessionId = ?', [sessionId]);
+      // Keep existing justifications for pupils who remain absent after a correction.
+      if (ids.length) {
+        this.db.run('DELETE FROM lesson_absences WHERE sessionId = ? AND studentId NOT IN (' +
+          ids.map(() => '?').join(',') + ')', [sessionId, ...ids]);
+      } else {
+        this.db.run('DELETE FROM lesson_absences WHERE sessionId = ?', [sessionId]);
+      }
       for (const id of ids) {
         this.db.run(`INSERT INTO lesson_absences
           (sessionId, studentId, status, justified, reason, updatedAt)
-          VALUES (?,?, 'غائب',0,'',?)`, [sessionId,id,now]);
+          VALUES (?,?, 'غائب',0,'',?)
+          ON CONFLICT(sessionId,studentId) DO UPDATE SET updatedAt=excluded.updatedAt`,
+          [sessionId,id,now]);
       }
       this.db.run(`INSERT INTO lesson_attendance_audit
         (id,sessionId,changedAt,action,previousAbsences,newAbsences)

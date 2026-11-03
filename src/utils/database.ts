@@ -2117,8 +2117,22 @@ this.db.exec(`
   async setLessonAbsenceJustification(sessionId: string, studentId: string,
     justified: boolean, reason = ''): Promise<void> {
     await this.initialize();
-    this.db.run('UPDATE lesson_absences SET justified = ?, reason = ?, updatedAt = ? WHERE sessionId = ? AND studentId = ?',
-      [justified ? 1 : 0,reason,new Date().toISOString(),sessionId,studentId]);
+    const old = this.db.exec('SELECT justified,reason FROM lesson_absences WHERE sessionId = ? AND studentId = ?',
+      [sessionId,studentId]);
+    if (!old.length || !old[0].values.length) throw new Error('سجل الغياب غير موجود');
+    const previous = old[0].values[0];
+    const now = new Date().toISOString();
+    this.db.run('BEGIN TRANSACTION');
+    try {
+      this.db.run('UPDATE lesson_absences SET justified = ?, reason = ?, updatedAt = ? WHERE sessionId = ? AND studentId = ?',
+        [justified ? 1 : 0,reason,now,sessionId,studentId]);
+      this.db.run(`INSERT INTO lesson_attendance_audit
+        (id,sessionId,changedAt,action,previousAbsences,newAbsences) VALUES (?,?,?,?,?,?)`,
+        [crypto.randomUUID(),sessionId,now,'justification:' + studentId,
+         JSON.stringify({justified:previous[0],reason:previous[1]}),
+         JSON.stringify({justified,reason})]);
+      this.db.run('COMMIT');
+    } catch (error) { this.db.run('ROLLBACK'); throw error; }
     await this.saveDatabase();
   }
 

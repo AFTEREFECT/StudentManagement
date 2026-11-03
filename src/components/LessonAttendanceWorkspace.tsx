@@ -141,6 +141,7 @@ export const LessonAttendanceWorkspace: React.FC = () => {
     const dateKey = [year, String(month).padStart(2, '0'), String(day).padStart(2, '0')].join('-');
     const expected = dateLessons(classLessons, dateKey).filter(l => periodOf(l) === period);
     if (!expected.length) return { label: '—', title: 'لا حصص مبرمجة', state: 'empty' };
+    if (dateKey > localToday()) return { label: '', title: 'فترة مستقبلية لم يحن موعدها', state: 'future' };
     const confirmed = expected.filter(l => sessions.some(s => s.id === keyFor(dateKey, section, l.id)));
     const absentCount = confirmed.filter(l => absences.some(a => a.sessionId === keyFor(dateKey, section, l.id) && a.studentId === studentId && a.status === 'غائب')).length;
     const absentMinutes = confirmed.reduce((total, l) => total + (absences.some(a => a.sessionId === keyFor(dateKey, section, l.id) && a.studentId === studentId && a.status === 'غائب') ? minutesOf(l.start_time, l.end_time) : 0), 0);
@@ -160,6 +161,15 @@ export const LessonAttendanceWorkspace: React.FC = () => {
   if (loading) return <div className="p-6" dir="rtl">جاري تحميل بيانات الغياب...</div>;
   return (
     <div dir="rtl" className="p-4 md:p-6 space-y-5 text-gray-900">
+      <style>{`@media print {
+        @page { size: A4 landscape; margin: 6mm; }
+        body * { visibility: hidden !important; }
+        #annual-absence-card, #annual-absence-card * { visibility: visible !important; }
+        #annual-absence-card { position: absolute; inset: 0; width: 100%; border: 0; }
+        #annual-absence-card .print\\:hidden { display: none !important; }
+        #annual-absence-card table { font-size: 7px !important; }
+        #annual-absence-card td, #annual-absence-card th { padding: 2px !important; }
+      }`}</style>
       <div className="rounded-xl bg-white border p-5">
         <h1 className="text-2xl font-bold">مسك الغياب حسب الحصص</h1>
         <p className="text-sm text-gray-600 mt-2">نسخة محسنة مرتبطة بجدول استعمال الزمن، مع بطاقة سنوية صباحًا ومساءً.</p>

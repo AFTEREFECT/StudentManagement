@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { dbManager } from '../utils/database';
+import { summarizeReferral } from '../utils/referralDetection';
 
 type Student = { id: string; firstName: string; lastName: string; section: string; studentId?: string; nationalId?: string };
 type Lesson = { id: string; class: string; day: string; start_time: string; end_time: string; subject_arabic: string; teacher_name_arabic: string; room_name: string };
 type Session = { id: string; date: string; section: string; timetableId: string; period: 'صباحية' | 'مسائية'; confirmedAt: string; startTime: string; endTime: string };
-type Absence = { sessionId: string; studentId: string; status: string; justified: number; date: string; startTime: string; endTime: string; period: string };
+type Absence = { sessionId: string; studentId: string; status: string; justified: number; date: string; subject: string; startTime: string; endTime: string; period: string };
 type Period = 'صباحية' | 'مسائية';
 const dayNames = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
 const months = [9, 10, 11, 12, 1, 2, 3, 4, 5, 6];
@@ -91,6 +92,23 @@ export const LessonAttendanceWorkspace: React.FC = () => {
   const cardStudent = classStudents.find(s => s.id === cardStudentId);
   const daySessions = sessions.filter(s => s.date === date && s.section === section);
   const absentSet = new Set(selectedAbsent);
+  const summaryFor = (studentId: string, startTime: string) =>
+    summarizeReferral(studentId, date, startTime, section, absences, sessions);
+  // Only a confirmed present student is officially referred; before confirmation,
+  // show a warning rather than falsely asserting the student's attendance.
+  const needsReferral = (studentId: string, startTime: string) => {
+    const info = summaryFor(studentId, startTime);
+    return info.outstanding.length > 0;
+  };
+  const confirmedReturns = daySessions.flatMap(session =>
+    classStudents.filter(student =>
+      !absences.some(a => a.sessionId === session.id && a.studentId === student.id && a.status === 'غائب') &&
+      needsReferral(student.id, session.startTime)
+    ).map(student => ({ student, session, summary: summaryFor(student.id, session.startTime) }))
+  );
+  const uniqueReturns = [...new Map(confirmedReturns
+    .sort((a,b) => b.session.startTime.localeCompare(a.session.startTime))
+    .map(r => [r.student.id, r])).values()];
 
   useEffect(() => {
     setLessonId(scheduled[0]?.id || '');
@@ -220,9 +238,29 @@ export const LessonAttendanceWorkspace: React.FC = () => {
                 className={'w-full flex items-center justify-between text-right rounded-lg border p-3 ' + (absentSet.has(s.id) ? 'bg-red-50 border-red-300' : 'bg-white')}
                 onClick={() => setSelectedAbsent(old => old.includes(s.id) ? old.filter(id => id !== s.id) : [...old, s.id])}>
                 <span>{s.lastName} {s.firstName} <span className="text-gray-500 text-xs">{s.studentId}</span></span>
-                <strong className={absentSet.has(s.id) ? 'text-red-700' : 'text-green-700'}>{absentSet.has(s.id) ? 'غائب ✕' : 'حاضر ✓'}</strong>
+                <span className="flex items-center gap-2 flex-wrap justify-end">
+                  {!absentSet.has(s.id) && needsReferral(s.id, currentLesson.start_time) &&
+                    <span className="bg-amber-100 text-amber-900 border border-amber-300 rounded px-2 py-1 text-xs font-semibold">
+                      {selectedSession ? 'موجّه للإدارة' : 'يتطلب إحالة عند تأكيد حضوره'}
+                    </span>}
+                  <strong className={absentSet.has(s.id) ? 'text-red-700' : 'text-green-700'}>{absentSet.has(s.id) ? 'غائب ✕' : 'حاضر ✓'}</strong>
+                </span>
               </button>)}
             </div>
+            {classStudents.some(s => !absentSet.has(s.id) && needsReferral(s.id, currentLesson.start_time)) &&
+              <section className="border rounded-lg bg-amber-50 p-3 space-y-3">
+                <h3 className="font-bold text-amber-900">تلاميذ لهم غيابات سابقة غير مسوّاة — يرجى توجيههم للإدارة عند تأكيد حضورهم</h3>
+                {classStudents.filter(s => !absentSet.has(s.id) && needsReferral(s.id, currentLesson.start_time)).map(s => {
+                  const info = summaryFor(s.id, currentLesson.start_time);
+                  return <div key={s.id} className="border-t border-amber-200 pt-2 text-sm">
+                    <strong>{s.lastName} {s.firstName}</strong>
+                    <p>ساعات الغياب السابقة: {readableDuration(info.totalMinutes)} | غير المبرر: {readableDuration(info.outstandingMinutes)} | مرات الغياب: {info.occurrences}
+                      {info.immediatelyPreviousAbsence ? ' | غائب عن الحصة الماضية' : ''}</p>
+                    <ul className="list-disc pr-5">{info.outstanding.map(a =>
+                      <li key={a.sessionId}>{a.date} — {a.subject} — {a.startTime} إلى {a.endTime} ({readableDuration(minutesOf(a.startTime,a.endTime))})</li>)}</ul>
+                  </div>;
+                })}
+              </section>}
             <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
               <strong>الغائبون: {selectedAbsent.length} / {classStudents.length}</strong>
               <button type="button" disabled={saving} onClick={save} className="bg-blue-700 hover:bg-blue-800 text-white font-bold rounded-lg px-5 py-3 disabled:opacity-50">
@@ -236,6 +274,24 @@ export const LessonAttendanceWorkspace: React.FC = () => {
         <div className="rounded-xl bg-white border p-4 space-y-3">
           <h2 className="text-lg font-bold">متابعة مسك الحصص — {date}</h2>
           <p>الحصص المؤكدة: {daySessions.length} من {scheduled.length} | الحصص غير المؤكدة: {Math.max(0, scheduled.length - daySessions.length)}</p>
+          <section className="border rounded-lg p-3 space-y-3 bg-amber-50">
+            <h3 className="font-bold">الموجهون للإدارة بعد العودة من غياب</h3>
+            <p className="text-sm">تعرض هذه القائمة التلاميذ الذين تأكد حضورهم في حصة لاحقة، وما زالت لديهم حصص غياب سابقة غير مبررة. كل عودة جديدة بعد غياب غير مسوّى تؤدي إلى ظهور الإحالة مرة أخرى.</p>
+            {uniqueReturns.length === 0 && <p className="text-sm text-gray-600">لا توجد إحالات مؤكدة لهذا القسم في التاريخ المختار.</p>}
+            {uniqueReturns.map(({student,session,summary}) =>
+              <div key={student.id} className="bg-white border rounded-lg p-3 space-y-2 text-sm">
+                <p><strong>{student.lastName} {student.firstName}</strong> — {student.studentId || student.nationalId}</p>
+                <p>حصة العودة: {session.startTime}–{session.endTime}
+                  {summary.immediatelyPreviousAbsence ? ' | غائب في الحصة الماضية' : ''}
+                </p>
+                <p>مجموع ساعات غيابه السابقة: <strong>{readableDuration(summary.totalMinutes)}</strong> |
+                  غير المبرر: <strong>{readableDuration(summary.outstandingMinutes)}</strong> |
+                  عدد مرات الغياب: <strong>{summary.occurrences}</strong></p>
+                <ul className="list-disc pr-5">{summary.history.map(a =>
+                  <li key={a.sessionId}>{a.date} | {a.subject} | {a.startTime}–{a.endTime} |
+                    {readableDuration(minutesOf(a.startTime,a.endTime))} | {a.justified ? 'مبرر' : 'غير مبرر'}</li>)}</ul>
+              </div>)}
+          </section>
           {scheduled.map(l => {
             const item = daySessions.find(s => s.id === keyFor(date, section, l.id));
             const count = absences.filter(a => a.sessionId === keyFor(date, section, l.id)).length;

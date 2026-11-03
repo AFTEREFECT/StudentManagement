@@ -107,7 +107,7 @@ export const LessonAttendanceWorkspace: React.FC = () => {
     ).map(student => ({ student, session, summary: summaryFor(student.id, session.startTime) }))
   );
   const uniqueReturns = [...new Map(confirmedReturns
-    .sort((a,b) => b.session.startTime.localeCompare(a.session.startTime))
+    .sort((a,b) => a.session.startTime.localeCompare(b.session.startTime))
     .map(r => [r.student.id, r])).values()];
 
   useEffect(() => {
